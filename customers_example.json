@@ -1,0 +1,66 @@
+[
+  {
+    "customer_info": {
+      "business_name": "Tech Solutions Inc",
+      "street": "100 Main Street",
+      "city": "Austin",
+      "region": "TX",
+      "postal_code": "78701",
+      "country": "US",
+      "business_type": "Corporation",
+      "tax_id": "12-3456789",
+      "website": "https://techsolutions.example",
+      "first_name": "Alice",
+      "last_name": "Johnson",
+      "email": "compliance@techsolutions.example",
+      "phone": "+15125551234",
+      "business_industry": "TECHNOLOGY",
+      "business_regions_of_operation": "USA_AND_CANADA",
+      "job_position": "CEO"
+    },
+    "phone_numbers": [
+      "+15125556789",
+      "+15125556790"
+    ],
+    "document_path": "documents/tech_solutions_license.pdf"
+  },
+  {
+    "customer_info": {
+      "business_name": "Healthcare Partners LLC",
+      "street": "200 Medical Plaza",
+      "city": "Boston",
+      "region": "MA",
+      "postal_code": "02101",
+      "country": "US",
+      "business_type": "LLC",
+      "tax_id": "98-7654321",
+      "website": "https://healthcarepartners.example",
+      "first_name": "Robert",
+      "last_name": "Smith",
+      "email": "compliance@healthcarepartners.example",
+      "phone": "+16175551234",
+      "business_industry": "HEALTHCARE",
+      "business_regions_of_operation": "USA_AND_CANADA",
+      "rep1": {
+        "first_name": "Robert",
+        "last_name": "Smith",
+        "email": "robert@healthcarepartners.example",
+        "phone_number": "+16175551234",
+        "job_position": "Managing Partner"
+      },
+      "rep2": {
+        "first_name": "Sarah",
+        "last_name": "Williams",
+        "email": "sarah@healthcarepartners.example",
+        "phone_number": "+16175551235",
+        "job_position": "Operations Director"
+      }
+    },
+    "phone_numbers": [
+      "+16175556789",
+      "+16175556790",
+      "+16175556791"
+    ],
+    "document_path": "documents/healthcare_partners_license.pdf"
+  }
+]

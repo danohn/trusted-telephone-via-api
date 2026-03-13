@@ -10,3 +10,17 @@ wheels/
 .venv
 
 .ruff_cache/
+
+# Customer data and documents
+documents/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+
+# Batch processing files
+customers.json
+*_results.json
+
+# Environment variables (if using .env file)
+.env
