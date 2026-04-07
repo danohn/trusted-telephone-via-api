@@ -54,7 +54,7 @@ def batch_onboard(customers_file):
             result = onboard_isv_customer(
                 customer_info=customer['customer_info'],
                 target_phone_numbers=customer['phone_numbers'],
-                file_path=customer['document_path']
+                file_path=customer.get('document_path')
             )
 
             if result:

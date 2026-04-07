@@ -13,14 +13,15 @@ if not ACCOUNT_SID or not AUTH_TOKEN:
 
 client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
-def onboard_isv_customer(customer_info, target_phone_numbers, file_path):
+def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
     """
     Onboard an ISV customer to Twilio Trust Hub.
 
     Args:
         customer_info: Dictionary containing customer details
         target_phone_numbers: List of phone numbers to register (e.g., ["+14155556789", "+14155556790"])
-        file_path: Path to the business license/identity document
+        file_path: Optional path to a business license/identity document (PDF, JPEG, or PNG).
+                   If omitted, the business_registration document is created using attributes only.
 
     Returns:
         dict: Contains created resource SIDs (profile_sid, trust_product_sid, phone_numbers_assigned)
@@ -36,8 +37,8 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path):
         print(f"ERROR: Missing required fields in customer_info: {', '.join(missing_fields)}")
         return None
 
-    # Validate file exists
-    if not os.path.exists(file_path):
+    # Validate file exists only if a path was provided
+    if file_path and not os.path.exists(file_path):
         print(f"ERROR: File not found: {file_path}")
         return None
 
@@ -97,19 +98,31 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path):
             attributes={"address_sids": address.sid}
         )
 
-        # Document B: Identity Proof (Physical File Upload - e.g., EIN or Business License)
-        print(f"Uploading {file_path}...")
-        with open(file_path, 'rb') as f:
+        # Document B: Identity Proof (EIN / Business Registration)
+        # A physical file upload is optional — attributes alone are sufficient.
+        if file_path:
+            print(f"Uploading {file_path}...")
+            with open(file_path, 'rb') as f:
+                identity_doc = client.trusthub.v1.supporting_documents.create(
+                    friendly_name="Business Identity Proof",
+                    type="business_registration",
+                    attributes={
+                        "business_name": customer_info['business_name'],
+                        "document_number": customer_info['tax_id']
+                    },
+                    file=f
+                )
+            print(f"Identity Document Uploaded: {identity_doc.sid}")
+        else:
             identity_doc = client.trusthub.v1.supporting_documents.create(
                 friendly_name="Business Identity Proof",
                 type="business_registration",
                 attributes={
                     "business_name": customer_info['business_name'],
                     "document_number": customer_info['tax_id']
-                },
-                file=f
+                }
             )
-        print(f"Identity Document Uploaded: {identity_doc.sid}")
+            print(f"Created Identity Document (no file): {identity_doc.sid}")
 
         # STEP 3: CREATE END USERS (Three Required per documentation)
         # 1. Business Legal Info (Required attributes: identity, industry, regions)
@@ -269,11 +282,6 @@ if __name__ == "__main__":
         #     "job_position": "CFO"
         # }
     }
-    FILE_TO_UPLOAD = "business_license.pdf"
-
-    # Single phone number (backwards compatible)
-    # result = onboard_isv_customer(data, "+14155556789", FILE_TO_UPLOAD)
-
     # Multiple phone numbers
     PHONES_TO_REGISTER = [
         "+14155556789",
@@ -281,7 +289,9 @@ if __name__ == "__main__":
         "+14155556791"
     ]
 
-    result = onboard_isv_customer(data, PHONES_TO_REGISTER, FILE_TO_UPLOAD)
+    # file_path is optional — omit it or pass a path to upload a business licence document
+    result = onboard_isv_customer(data, PHONES_TO_REGISTER)
+    # result = onboard_isv_customer(data, PHONES_TO_REGISTER, file_path="business_license.pdf")
 
     if result:
         print(f"\nSuccess! Profile SID: {result['profile_sid']}")
