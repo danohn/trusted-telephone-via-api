@@ -95,7 +95,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
         address_doc = client.trusthub.v1.supporting_documents.create(
             friendly_name="Address Proof",
             type="customer_profile_address",
-            attributes={"address_sids": address.sid}
+            attributes={"address_sids": [address.sid]}
         )
 
         # Document B: Identity Proof (EIN / Business Registration)
