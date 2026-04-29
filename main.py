@@ -92,8 +92,8 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
 
         # STEP 2: CREATE SUPPORTING DOCUMENTS
         # Document A: Address Proof (links to Address SID)
+        # Note: friendly_name is omitted for customer_profile_address type as it's auto-generated
         address_doc = client.trusthub.v1.supporting_documents.create(
-            friendly_name="Address Proof",
             type="customer_profile_address",
             attributes={"address_sids": [address.sid]}
         )
