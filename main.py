@@ -1,4 +1,5 @@
 import os
+import json
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
@@ -92,24 +93,27 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
 
         # STEP 2: CREATE SUPPORTING DOCUMENTS
         # Document A: Address Proof (links to Address SID)
-        # Note: friendly_name is omitted for customer_profile_address type as it's auto-generated
+        # Note: attributes must be passed as JSON string for Twilio API
         address_doc = client.trusthub.v1.supporting_documents.create(
+            friendly_name=f"Address - {customer_info['business_name']}",
             type="customer_profile_address",
-            attributes={"address_sids": [address.sid]}
+            attributes=json.dumps({"address_sids": [address.sid]})
         )
 
         # Document B: Identity Proof (EIN / Business Registration)
         # A physical file upload is optional — attributes alone are sufficient.
+        identity_attributes = json.dumps({
+            "business_name": customer_info['business_name'],
+            "document_number": customer_info['tax_id']
+        })
+
         if file_path:
             print(f"Uploading {file_path}...")
             with open(file_path, 'rb') as f:
                 identity_doc = client.trusthub.v1.supporting_documents.create(
                     friendly_name="Business Identity Proof",
                     type="business_registration",
-                    attributes={
-                        "business_name": customer_info['business_name'],
-                        "document_number": customer_info['tax_id']
-                    },
+                    attributes=identity_attributes,
                     file=f
                 )
             print(f"Identity Document Uploaded: {identity_doc.sid}")
@@ -117,10 +121,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
             identity_doc = client.trusthub.v1.supporting_documents.create(
                 friendly_name="Business Identity Proof",
                 type="business_registration",
-                attributes={
-                    "business_name": customer_info['business_name'],
-                    "document_number": customer_info['tax_id']
-                }
+                attributes=identity_attributes
             )
             print(f"Created Identity Document (no file): {identity_doc.sid}")
 
