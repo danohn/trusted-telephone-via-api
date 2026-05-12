@@ -6,6 +6,8 @@ from twilio.base.exceptions import TwilioRestException
 # 1. Setup Credentials
 ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
+SECONDARY_POLICY_SID_ENV = os.environ.get('TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID')
+SHAKEN_POLICY_SID_ENV = os.environ.get('TWILIO_SHAKEN_STIR_POLICY_SID')
 
 if not ACCOUNT_SID or not AUTH_TOKEN:
     raise ValueError(
@@ -14,15 +16,49 @@ if not ACCOUNT_SID or not AUTH_TOKEN:
 
 client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
-def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
+
+def _find_policy_sid(policies, friendly_names):
+    """
+    Find the first policy whose friendly_name matches one of the expected names.
+
+    Twilio policy names can vary across products/accounts, so we prefer a
+    small set of known names instead of hard-coding a single exact string.
+    """
+    for friendly_name in friendly_names:
+        for policy in policies:
+            if policy.friendly_name == friendly_name:
+                return policy.sid
+    return None
+
+
+def _policy_sid_from_env_or_name(env_value, policies, friendly_names):
+    if env_value:
+        return env_value
+    return _find_policy_sid(policies, friendly_names)
+
+
+def _primary_customer_profile_sid(customer_info):
+    return (
+        customer_info.get("primary_customer_profile_sid")
+        or os.environ.get("TWILIO_PRIMARY_CUSTOMER_PROFILE_SID")
+    )
+
+
+def _evaluation_result(evaluation):
+    return {
+        "evaluation_sid": evaluation.sid,
+        "status": evaluation.status,
+        "results": evaluation.results,
+    }
+
+
+def onboard_isv_customer(customer_info, target_phone_numbers):
     """
     Onboard an ISV customer to Twilio Trust Hub.
 
     Args:
         customer_info: Dictionary containing customer details
         target_phone_numbers: List of phone numbers to register (e.g., ["+14155556789", "+14155556790"])
-        file_path: Optional path to a business license/identity document (PDF, JPEG, or PNG).
-                   If omitted, the business_registration document is created using attributes only.
 
     Returns:
         dict: Contains created resource SIDs (profile_sid, trust_product_sid, phone_numbers_assigned)
@@ -51,27 +87,33 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
         'business_type', 'tax_id', 'website', 'first_name', 'last_name', 'email', 'phone'
     ]
     missing_fields = [field for field in required_fields if field not in customer_info]
+    primary_profile_sid = _primary_customer_profile_sid(customer_info)
+    if not primary_profile_sid:
+        missing_fields.append("primary_customer_profile_sid or TWILIO_PRIMARY_CUSTOMER_PROFILE_SID")
     if missing_fields:
         log_step("validate_required_fields", "failed", {"missing_fields": missing_fields})
         print(f"ERROR: Missing required fields in customer_info: {', '.join(missing_fields)}")
         return {"execution_log": execution_log, "error": f"Missing required fields: {', '.join(missing_fields)}"}
     log_step("validate_required_fields", "success")
 
-    # Validate file exists only if a path was provided
-    if file_path:
-        log_step("validate_file_path", "started", {"file_path": file_path})
-        if not os.path.exists(file_path):
-            log_step("validate_file_path", "failed", {"error": "File not found"})
-            print(f"ERROR: File not found: {file_path}")
-            return {"execution_log": execution_log, "error": f"File not found: {file_path}"}
-        log_step("validate_file_path", "success")
-
     try:
         # --- DYNAMIC LOOKUPS ---
         log_step("lookup_policies", "started")
-        policies = client.trusthub.v1.policies.list()
-        SECONDARY_POLICY_SID = next((p.sid for p in policies if p.friendly_name == "Secondary Customer Profile of type Business"), None)
-        SHAKEN_POLICY_SID = next((p.sid for p in policies if p.friendly_name == "SHAKEN/STIR"), None)
+        policies = client.trusthub.v1.policies.list(limit=100)
+        SECONDARY_POLICY_SID = _policy_sid_from_env_or_name(
+            SECONDARY_POLICY_SID_ENV,
+            policies,
+            [
+                "Secondary Customer Profile of type Business",
+            ],
+        )
+        SHAKEN_POLICY_SID = _policy_sid_from_env_or_name(
+            SHAKEN_POLICY_SID_ENV,
+            policies,
+            [
+                "SHAKEN/STIR",
+            ],
+        )
 
         # Validate required policies exist before proceeding
         if not SECONDARY_POLICY_SID:
@@ -171,14 +213,26 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
 
             for phone_number, phone_sid in phone_number_sids:
                 try:
+                    client.trusthub.v1.customer_profiles(existing_profile.sid).customer_profiles_channel_endpoint_assignment.create(
+                        channel_endpoint_type="phone-number",
+                        channel_endpoint_sid=phone_sid
+                    )
+                    print(f"  ✓ Newly assigned {phone_number} to Customer Profile")
+                except TwilioRestException as e:
+                    if "already" not in str(e).lower():
+                        print(f"  ✗ Failed to assign {phone_number} to Customer Profile: {e}")
+                        failed_numbers.append((phone_number, str(e)))
+                        continue
+
+                try:
                     client.trusthub.v1.trust_products(existing_trust_product.sid).customer_profiles_channel_endpoint_assignment.create(
                         channel_endpoint_type="phone-number",
                         channel_endpoint_sid=phone_sid
                     )
-                    print(f"  ✓ Newly assigned {phone_number}")
+                    print(f"  ✓ Newly assigned {phone_number} to Trust Product")
                     assigned_numbers.append(phone_number)
                 except TwilioRestException as e:
-                    if "already has a trust product" in str(e).lower():
+                    if "already" in str(e).lower():
                         print(f"  INFO: {phone_number} already assigned")
                         already_assigned.append(phone_number)
                     else:
@@ -253,8 +307,9 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
         log_step("create_address", "success", {"address_sid": address.sid})
         print(f"Created Address: {address.sid}")
 
-        # STEP 2: CREATE SUPPORTING DOCUMENTS
-        # Document A: Address Proof (links to Address SID)
+        # STEP 2: CREATE SUPPORTING DOCUMENT
+        # The Trust Hub secondary profile flow uses a customer_profile_address
+        # document that links to the Address SID.
         # Note: attributes must be passed as JSON string for Twilio API
         log_step("create_address_document", "started")
         address_doc = client.trusthub.v1.supporting_documents.create(
@@ -263,40 +318,6 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
             attributes=json.dumps({"address_sids": [address.sid]})
         )
         log_step("create_address_document", "success", {"address_doc_sid": address_doc.sid})
-
-        # Document B: Identity Proof (EIN / Business Registration)
-        # A physical file upload is optional — attributes alone are sufficient.
-        log_step("create_identity_document", "started")
-        identity_attributes = json.dumps({
-            "business_name": customer_info['business_name'],
-            "document_number": customer_info['tax_id']
-        })
-
-        if file_path:
-            print(f"Uploading {file_path}...")
-            with open(file_path, 'rb') as f:
-                identity_doc = client.trusthub.v1.supporting_documents.create(
-                    friendly_name="Business Identity Proof",
-                    type="business_registration",
-                    attributes=identity_attributes,
-                    file=f
-                )
-            log_step("create_identity_document", "success", {
-                "identity_doc_sid": identity_doc.sid,
-                "with_file": True
-            })
-            print(f"Identity Document Uploaded: {identity_doc.sid}")
-        else:
-            identity_doc = client.trusthub.v1.supporting_documents.create(
-                friendly_name="Business Identity Proof",
-                type="business_registration",
-                attributes=identity_attributes
-            )
-            log_step("create_identity_document", "success", {
-                "identity_doc_sid": identity_doc.sid,
-                "with_file": False
-            })
-            print(f"Created Identity Document (no file): {identity_doc.sid}")
 
         # STEP 3: CREATE END USERS (Three Required per documentation)
         # 1. Business Legal Info (Required attributes: identity, industry, regions)
@@ -308,8 +329,8 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
                 "business_name": customer_info['business_name'],
                 "business_type": customer_info['business_type'],
                 "business_registration_number": customer_info['tax_id'],
-                "business_registration_identifier": "EIN",
-                "business_identity": "direct_customer",
+                "business_registration_identifier": customer_info.get('business_registration_identifier', 'EIN'),
+                "business_identity": customer_info.get('business_identity', 'direct_customer'),
                 "business_industry": customer_info.get('business_industry', 'TECHNOLOGY'),
                 "business_regions_of_operation": customer_info.get('business_regions_of_operation', 'USA_AND_CANADA'),
                 "website_url": customer_info['website']
@@ -324,6 +345,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
             "last_name": customer_info['last_name'],
             "email": customer_info['email'],
             "phone_number": customer_info['phone'],
+            "business_title": customer_info.get('business_title', customer_info.get('job_position', 'Director')),
             "job_position": customer_info.get('job_position', 'Director')
         })
         rep1 = client.trusthub.v1.end_users.create(
@@ -356,7 +378,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
 
         # STEP 5: ASSIGN ALL ENTITIES TO THE PROFILE
         log_step("assign_entities_to_profile", "started")
-        entities_to_assign = [biz_info.sid, rep1.sid, rep2.sid, address_doc.sid, identity_doc.sid]
+        entities_to_assign = [primary_profile_sid, address_doc.sid, biz_info.sid, rep1.sid, rep2.sid]
         for i, sid in enumerate(entities_to_assign):
             client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_entity_assignments.create(object_sid=sid)
         log_step("assign_entities_to_profile", "success", {
@@ -364,13 +386,59 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
             "entity_sids": entities_to_assign
         })
 
-        # STEP 6: SUBMIT PROFILE FOR REVIEW
+        # STEP 6: ASSIGN ALL PHONE NUMBERS TO SECONDARY CUSTOMER PROFILE
+        log_step("assign_phone_numbers_to_profile", "started", {"phone_count": len(phone_number_sids)})
+        profile_assigned_numbers = []
+        profile_failed_numbers = []
+        for phone_number, phone_sid in phone_number_sids:
+            try:
+                client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_channel_endpoint_assignment.create(
+                    channel_endpoint_type="phone-number",
+                    channel_endpoint_sid=phone_sid
+                )
+                print(f"  ✓ Assigned {phone_number} to Customer Profile")
+                profile_assigned_numbers.append(phone_number)
+            except TwilioRestException as e:
+                print(f"  ✗ Failed to assign {phone_number} to Customer Profile: {e}")
+                profile_failed_numbers.append((phone_number, str(e)))
+
+        if profile_failed_numbers:
+            log_step("assign_phone_numbers_to_profile", "failed", {
+                "assigned_count": len(profile_assigned_numbers),
+                "failed_numbers": [{"number": num, "error": err} for num, err in profile_failed_numbers]
+            })
+            return {
+                "execution_log": execution_log,
+                "error": "Failed to assign all phone numbers to Customer Profile",
+                "failed_numbers": profile_failed_numbers
+            }
+
+        log_step("assign_phone_numbers_to_profile", "success", {
+            "assigned_count": len(profile_assigned_numbers),
+            "assigned_numbers": profile_assigned_numbers
+        })
+
+        # STEP 7: EVALUATE AND SUBMIT PROFILE FOR REVIEW
+        log_step("evaluate_profile", "started")
+        profile_evaluation = client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_evaluations.create(
+            policy_sid=SECONDARY_POLICY_SID
+        )
+        profile_evaluation_result = _evaluation_result(profile_evaluation)
+        if profile_evaluation.status != "compliant":
+            log_step("evaluate_profile", "failed", profile_evaluation_result)
+            return {
+                "execution_log": execution_log,
+                "error": "Customer Profile evaluation failed",
+                "evaluation": profile_evaluation_result
+            }
+        log_step("evaluate_profile", "success", profile_evaluation_result)
+
         log_step("submit_profile_for_review", "started")
         client.trusthub.v1.customer_profiles(profile.sid).update(status="pending-review")
         log_step("submit_profile_for_review", "success")
         print(f"Secondary Customer Profile {profile.sid} submitted for review.")
 
-        # STEP 7: CREATE STIR/SHAKEN TRUST PRODUCT
+        # STEP 8: CREATE STIR/SHAKEN TRUST PRODUCT
         log_step("create_trust_product", "started")
         trust_product = client.trusthub.v1.trust_products.create(
             friendly_name=f"STIR/SHAKEN: {customer_info['business_name']}",
@@ -379,12 +447,12 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
         )
         log_step("create_trust_product", "success", {"trust_product_sid": trust_product.sid})
 
-        # STEP 8: LINK SECONDARY PROFILE TO TRUST PRODUCT
+        # STEP 9: LINK SECONDARY PROFILE TO TRUST PRODUCT
         log_step("link_profile_to_trust_product", "started")
         client.trusthub.v1.trust_products(trust_product.sid).trust_products_entity_assignments.create(object_sid=profile.sid)
         log_step("link_profile_to_trust_product", "success")
 
-        # STEP 9: ASSIGN ALL PHONE NUMBERS TO TRUST PRODUCT (Channel Endpoints)
+        # STEP 10: ASSIGN ALL PHONE NUMBERS TO TRUST PRODUCT (Channel Endpoints)
         log_step("assign_phone_numbers", "started", {"phone_count": len(phone_number_sids)})
         print(f"Assigning {len(phone_number_sids)} phone number(s) to Trust Product...")
         assigned_numbers = []
@@ -409,7 +477,37 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
             "failed_numbers": [{"number": num, "error": err} for num, err in failed_numbers]
         })
 
-        # STEP 10: SUBMIT TRUST PRODUCT FOR REVIEW
+        if failed_numbers:
+            return {
+                "profile_sid": profile.sid,
+                "trust_product_sid": trust_product.sid,
+                "assigned_numbers": assigned_numbers,
+                "failed_numbers": failed_numbers,
+                "total_requested": len(phone_number_sids),
+                "execution_log": execution_log,
+                "error": "Failed to assign all phone numbers to Trust Product"
+            }
+
+        # STEP 11: EVALUATE AND SUBMIT TRUST PRODUCT FOR REVIEW
+        log_step("evaluate_trust_product", "started")
+        trust_product_evaluation = client.trusthub.v1.trust_products(trust_product.sid).trust_products_evaluations.create(
+            policy_sid=SHAKEN_POLICY_SID
+        )
+        trust_product_evaluation_result = _evaluation_result(trust_product_evaluation)
+        if trust_product_evaluation.status != "compliant":
+            log_step("evaluate_trust_product", "failed", trust_product_evaluation_result)
+            return {
+                "profile_sid": profile.sid,
+                "trust_product_sid": trust_product.sid,
+                "assigned_numbers": assigned_numbers,
+                "failed_numbers": failed_numbers,
+                "total_requested": len(phone_number_sids),
+                "execution_log": execution_log,
+                "error": "Trust Product evaluation failed",
+                "evaluation": trust_product_evaluation_result
+            }
+        log_step("evaluate_trust_product", "success", trust_product_evaluation_result)
+
         log_step("submit_trust_product_for_review", "started")
         client.trusthub.v1.trust_products(trust_product.sid).update(status="pending-review")
         log_step("submit_trust_product_for_review", "success")
@@ -433,6 +531,8 @@ def onboard_isv_customer(customer_info, target_phone_numbers, file_path=None):
             "assigned_numbers": assigned_numbers,
             "failed_numbers": failed_numbers,
             "total_requested": len(phone_number_sids),
+            "profile_evaluation": profile_evaluation_result,
+            "trust_product_evaluation": trust_product_evaluation_result,
             "execution_log": execution_log
         }
         log_step("onboarding_complete", "success")
@@ -480,11 +580,13 @@ if __name__ == "__main__":
         "last_name": "Doe",
         "email": "compliance@acme.example",
         "phone": "+14155551234",
+        "primary_customer_profile_sid": "BUxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 
         # Optional fields (with defaults shown)
         "business_industry": "TECHNOLOGY",  # Default: TECHNOLOGY
         "business_regions_of_operation": "USA_AND_CANADA",  # Default: USA_AND_CANADA
         "job_position": "Director",  # Default: Director
+        "business_title": "Director",  # Default: job_position
 
         # Optional: Separate representative data (if different from primary contact)
         # "rep1": {
@@ -492,6 +594,7 @@ if __name__ == "__main__":
         #     "last_name": "Doe",
         #     "email": "john@acme.example",
         #     "phone_number": "+14155551234",
+        #     "business_title": "CEO",
         #     "job_position": "CEO"
         # },
         # "rep2": {
@@ -499,6 +602,7 @@ if __name__ == "__main__":
         #     "last_name": "Smith",
         #     "email": "jane@acme.example",
         #     "phone_number": "+14155551235",
+        #     "business_title": "CFO",
         #     "job_position": "CFO"
         # }
     }
@@ -509,10 +613,10 @@ if __name__ == "__main__":
         "+14155556791"
     ]
 
-    # file_path is optional — omit it or pass a path to upload a business licence document
     result = onboard_isv_customer(data, PHONES_TO_REGISTER)
-    # result = onboard_isv_customer(data, PHONES_TO_REGISTER, file_path="business_license.pdf")
 
-    if result:
+    if result and "profile_sid" in result:
         print(f"\nSuccess! Profile SID: {result['profile_sid']}")
         print(f"Assigned {result['assigned_numbers']} number(s)")
+    elif result:
+        print(f"\nOnboarding failed: {result.get('error', 'Unknown error')}")

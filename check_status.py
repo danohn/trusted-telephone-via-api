@@ -3,7 +3,6 @@ Check the status of Customer Profiles and Trust Products.
 
 Usage:
     python check_status.py BUxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-    python check_status.py BTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 """
 
 import os
@@ -103,18 +102,17 @@ def check_trust_product(trust_product_sid):
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage:")
-        print("  python check_status.py <PROFILE_SID or TRUST_PRODUCT_SID>")
+        print("  python check_status.py <TRUST HUB SID>")
         print("\nExamples:")
         print("  python check_status.py BUxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
-        print("  python check_status.py BTxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
         sys.exit(1)
 
     sid = sys.argv[1]
 
     if sid.startswith('BU'):
-        check_customer_profile(sid)
-    elif sid.startswith('BT'):
-        check_trust_product(sid)
+        profile = check_customer_profile(sid)
+        if profile is None:
+            check_trust_product(sid)
     else:
-        print("ERROR: SID must start with 'BU' (Customer Profile) or 'BT' (Trust Product)")
+        print("ERROR: SID must start with 'BU' (Trust Hub Customer Profile or Trust Product)")
         sys.exit(1)

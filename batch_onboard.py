@@ -21,8 +21,7 @@ def batch_onboard(customers_file):
     [
         {
             "customer_info": { ... },
-            "phone_numbers": ["+1...", "+1..."],
-            "document_path": "path/to/doc.pdf"
+            "phone_numbers": ["+1...", "+1..."]
         },
         ...
     ]
@@ -53,8 +52,7 @@ def batch_onboard(customers_file):
         try:
             result = onboard_isv_customer(
                 customer_info=customer['customer_info'],
-                target_phone_numbers=customer['phone_numbers'],
-                file_path=customer.get('document_path')
+                target_phone_numbers=customer['phone_numbers']
             )
 
             if result and 'profile_sid' in result:

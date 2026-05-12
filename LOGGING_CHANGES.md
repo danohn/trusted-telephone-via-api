@@ -14,10 +14,9 @@ Also implemented idempotency - the script now checks for existing resources and 
 
 ### Logged Steps (in order):
 1. `validate_required_fields` - Check for missing customer info fields
-2. `validate_file_path` - Check if document file exists (if provided)
-3. `lookup_policies` - Find Secondary Customer Profile and SHAKEN/STIR policies
-4. `check_existing_resources` - **NEW**: Search for existing profiles and trust products
-5. `lookup_phone_numbers` - Resolve phone numbers to their SIDs
+2. `lookup_policies` - Find Secondary Customer Profile and SHAKEN/STIR policies
+3. `check_existing_resources` - **NEW**: Search for existing profiles and trust products
+4. `lookup_phone_numbers` - Resolve phone numbers to their SIDs
 
 **If existing resources are found, the script will:**
 - Reuse the existing Customer Profile and Trust Product
@@ -28,18 +27,20 @@ Also implemented idempotency - the script now checks for existing resources and 
 **If no existing resources are found, the script continues with:**
 6. `create_address` - Create Twilio address resource
 7. `create_address_document` - Create address proof supporting document
-8. `create_identity_document` - Create business identity supporting document
-9. `create_business_info_end_user` - Create business information end user
-10. `create_rep1_end_user` - Create primary representative end user
-11. `create_rep2_end_user` - Create secondary representative end user
-12. `create_customer_profile` - Create secondary customer profile
-13. `assign_entities_to_profile` - Link all entities to the profile
-14. `submit_profile_for_review` - Submit profile to Twilio for review
-15. `create_trust_product` - Create STIR/SHAKEN trust product
-16. `link_profile_to_trust_product` - Link profile to trust product
-17. `assign_phone_numbers` - Assign phone numbers to trust product
-18. `submit_trust_product_for_review` - Submit trust product for review
-19. `onboarding_complete` - Final success marker
+8. `create_business_info_end_user` - Create business information end user
+9. `create_rep1_end_user` - Create primary representative end user
+10. `create_rep2_end_user` - Create secondary representative end user
+11. `create_customer_profile` - Create secondary customer profile
+12. `assign_entities_to_profile` - Link primary profile, address document, and end users to the profile
+13. `assign_phone_numbers_to_profile` - Assign phone numbers to the secondary customer profile
+14. `evaluate_profile` - Evaluate the customer profile before submission
+15. `submit_profile_for_review` - Submit profile to Twilio for review
+16. `create_trust_product` - Create STIR/SHAKEN trust product
+17. `link_profile_to_trust_product` - Link profile to trust product
+18. `assign_phone_numbers` - Assign phone numbers to trust product
+19. `evaluate_trust_product` - Evaluate the trust product before submission
+20. `submit_trust_product_for_review` - Submit trust product for review
+21. `onboarding_complete` - Final success marker
 
 ### batch_onboard.py
 1. **Enhanced result handling**: Now properly captures and saves execution_log from each customer
@@ -113,9 +114,10 @@ To identify the exact point of failure:
 ### Common Failure Points
 
 - **lookup_phone_numbers**: Phone numbers don't exist in the Twilio account
-- **lookup_policies**: Trust Hub policies not found (account not enabled for Trust Hub)
+- **lookup_policies**: Trust Hub policies not found and policy SID environment variables are not set
 - **create_address_document**: Invalid address_sids format
-- **create_identity_document**: Invalid business registration attributes
+- **evaluate_profile**: Missing primary profile assignment, phone assignment, or invalid profile data
+- **evaluate_trust_product**: Missing secondary profile assignment, phone assignment, or invalid trust product data
 - **submit_profile_for_review**: Missing required entities or invalid data
 - **assign_phone_numbers**: Phone numbers already assigned to another trust product
 
