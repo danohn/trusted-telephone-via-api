@@ -8,6 +8,7 @@ ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 SECONDARY_POLICY_SID_ENV = os.environ.get('TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID')
 SHAKEN_POLICY_SID_ENV = os.environ.get('TWILIO_SHAKEN_STIR_POLICY_SID')
+SHAKEN_STIR_POLICY_SID = "RN7a97559effdf62d00f4298208492a5ea"
 
 if not ACCOUNT_SID or not AUTH_TOKEN:
     raise ValueError(
@@ -17,24 +18,22 @@ if not ACCOUNT_SID or not AUTH_TOKEN:
 client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 
-def _find_policy_sid(policies, friendly_names):
+def _secondary_policy_sid(primary_profile_sid):
     """
-    Find the first policy whose friendly_name matches one of the expected names.
-
-    Twilio policy names can vary across products/accounts, so we prefer a
-    small set of known names instead of hard-coding a single exact string.
+    Twilio's secondary profile flow uses the policy SID from the approved
+    primary customer profile. Allow an env override for accounts that need it.
     """
-    for friendly_name in friendly_names:
-        for policy in policies:
-            if policy.friendly_name == friendly_name:
-                return policy.sid
-    return None
+    if SECONDARY_POLICY_SID_ENV:
+        return SECONDARY_POLICY_SID_ENV, None
+
+    primary_profile = client.trusthub.v1.customer_profiles(primary_profile_sid).fetch()
+    return primary_profile.policy_sid, primary_profile
 
 
-def _policy_sid_from_env_or_name(env_value, policies, friendly_names):
-    if env_value:
-        return env_value
-    return _find_policy_sid(policies, friendly_names)
+def _shaken_stir_policy_sid():
+    if SHAKEN_POLICY_SID_ENV:
+        return SHAKEN_POLICY_SID_ENV
+    return SHAKEN_STIR_POLICY_SID
 
 
 def _primary_customer_profile_sid(customer_info):
@@ -97,40 +96,36 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
     log_step("validate_required_fields", "success")
 
     try:
-        # --- DYNAMIC LOOKUPS ---
+        # --- POLICY LOOKUPS ---
         log_step("lookup_policies", "started")
-        policies = client.trusthub.v1.policies.list(limit=100)
-        SECONDARY_POLICY_SID = _policy_sid_from_env_or_name(
-            SECONDARY_POLICY_SID_ENV,
-            policies,
-            [
-                "Secondary Customer Profile of type Business",
-            ],
-        )
-        SHAKEN_POLICY_SID = _policy_sid_from_env_or_name(
-            SHAKEN_POLICY_SID_ENV,
-            policies,
-            [
-                "SHAKEN/STIR",
-            ],
-        )
+        SECONDARY_POLICY_SID, primary_profile = _secondary_policy_sid(primary_profile_sid)
+        SHAKEN_POLICY_SID = _shaken_stir_policy_sid()
 
-        # Validate required policies exist before proceeding
         if not SECONDARY_POLICY_SID:
-            log_step("lookup_policies", "failed", {"error": "Secondary Customer Profile policy not found"})
-            print("ERROR: Could not find 'Secondary Customer Profile of type Business' policy.")
-            return {"execution_log": execution_log, "error": "Secondary Customer Profile policy not found"}
+            log_step("lookup_policies", "failed", {
+                "error": "Primary Customer Profile did not return a policy SID",
+                "primary_profile_sid": primary_profile_sid
+            })
+            print("ERROR: Primary Customer Profile did not return a policy SID.")
+            return {"execution_log": execution_log, "error": "Primary Customer Profile did not return a policy SID"}
         if not SHAKEN_POLICY_SID:
             log_step("lookup_policies", "failed", {"error": "SHAKEN/STIR policy not found"})
-            print("ERROR: Could not find 'SHAKEN/STIR' policy.")
+            print("ERROR: SHAKEN/STIR policy SID not configured.")
             return {"execution_log": execution_log, "error": "SHAKEN/STIR policy not found"}
 
-        log_step("lookup_policies", "success", {
+        policy_details = {
             "secondary_policy_sid": SECONDARY_POLICY_SID,
-            "shaken_policy_sid": SHAKEN_POLICY_SID
-        })
-        print(f"Found Secondary Policy: {SECONDARY_POLICY_SID}")
-        print(f"Found SHAKEN Policy: {SHAKEN_POLICY_SID}")
+            "secondary_policy_source": "environment" if SECONDARY_POLICY_SID_ENV else "primary_customer_profile",
+            "primary_profile_sid": primary_profile_sid,
+            "shaken_policy_sid": SHAKEN_POLICY_SID,
+            "shaken_policy_source": "environment" if SHAKEN_POLICY_SID_ENV else "documented_default"
+        }
+        if primary_profile:
+            policy_details["primary_profile_status"] = primary_profile.status
+
+        log_step("lookup_policies", "success", policy_details)
+        print(f"Using Secondary Profile Policy: {SECONDARY_POLICY_SID}")
+        print(f"Using SHAKEN/STIR Policy: {SHAKEN_POLICY_SID}")
 
         # --- IDEMPOTENCY CHECK: Look for existing profile and trust product ---
         log_step("check_existing_resources", "started")
