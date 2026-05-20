@@ -79,13 +79,48 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         print(f"[{status.upper()}] {step_name}")
         if details:
             print(f"  Details: {details}")
+
+    def representative_data(rep_key):
+        rep = customer_info.get(rep_key)
+        if rep is None:
+            rep = {
+                "first_name": customer_info["first_name"],
+                "last_name": customer_info["last_name"],
+                "email": customer_info["email"],
+                "phone_number": customer_info["phone"],
+            }
+        return {
+            **rep,
+            "business_title": rep.get(
+                "business_title",
+                customer_info.get("business_title", customer_info.get("job_position", "Director")),
+            ),
+            "job_position": rep.get("job_position", customer_info.get("job_position", "Director")),
+        }
+
     # Validate required fields
     log_step("validate_required_fields", "started")
     required_fields = [
         'business_name', 'street', 'city', 'region', 'postal_code', 'country',
-        'business_type', 'tax_id', 'website', 'first_name', 'last_name', 'email', 'phone'
+        'business_type', 'tax_id', 'website', 'email'
     ]
     missing_fields = [field for field in required_fields if field not in customer_info]
+    if "rep1" not in customer_info:
+        missing_fields.extend(
+            field for field in ("first_name", "last_name", "phone") if field not in customer_info
+        )
+    else:
+        missing_fields.extend(
+            f"rep1.{field}"
+            for field in ("first_name", "last_name", "email", "phone_number")
+            if field not in customer_info["rep1"]
+        )
+    if "rep2" in customer_info:
+        missing_fields.extend(
+            f"rep2.{field}"
+            for field in ("first_name", "last_name", "email", "phone_number")
+            if field not in customer_info["rep2"]
+        )
     primary_profile_sid = _primary_customer_profile_sid(customer_info)
     if not primary_profile_sid:
         missing_fields.append("primary_customer_profile_sid or TWILIO_PRIMARY_CUSTOMER_PROFILE_SID")
@@ -305,12 +340,11 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         # STEP 2: CREATE SUPPORTING DOCUMENT
         # The Trust Hub secondary profile flow uses a customer_profile_address
         # document that links to the Address SID.
-        # Note: attributes must be passed as JSON string for Twilio API
         log_step("create_address_document", "started")
         address_doc = client.trusthub.v1.supporting_documents.create(
             friendly_name=f"Address - {customer_info['business_name']}",
             type="customer_profile_address",
-            attributes=json.dumps({"address_sids": [address.sid]})
+            attributes={"address_sids": address.sid}
         )
         log_step("create_address_document", "success", {"address_doc_sid": address_doc.sid})
 
@@ -335,14 +369,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
 
         # 2. Authorized Representative 1
         log_step("create_rep1_end_user", "started")
-        rep1_data = customer_info.get('rep1', {
-            "first_name": customer_info['first_name'],
-            "last_name": customer_info['last_name'],
-            "email": customer_info['email'],
-            "phone_number": customer_info['phone'],
-            "business_title": customer_info.get('business_title', customer_info.get('job_position', 'Director')),
-            "job_position": customer_info.get('job_position', 'Director')
-        })
+        rep1_data = representative_data("rep1")
         rep1 = client.trusthub.v1.end_users.create(
             friendly_name="Primary Authorized Representative",
             type="authorized_representative_1",
@@ -353,7 +380,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         # 3. Authorized Representative 2 (The policy requires two distinct rep assignments)
         # If rep2 data not provided, use rep1 data (common for small businesses)
         log_step("create_rep2_end_user", "started")
-        rep2_data = customer_info.get('rep2', rep1_data)
+        rep2_data = representative_data("rep2") if "rep2" in customer_info else rep1_data
         rep2 = client.trusthub.v1.end_users.create(
             friendly_name="Secondary Authorized Representative",
             type="authorized_representative_2",

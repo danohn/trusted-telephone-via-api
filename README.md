@@ -75,13 +75,19 @@ The script validates Twilio credentials before making any API calls. The primary
 - `job_position`: Default `"Director"`
 - `business_title`: Defaults to `job_position`
 
-### **Advanced: Separate Representative Data**
+### **Representative Data**
 
-If your customer has different authorized representatives, you can specify them separately:
+Both representative formats are supported:
+
+- Simple format: provide top-level `first_name`, `last_name`, `phone`, `business_title`, and `job_position`. The script uses that contact for `rep1` and reuses it for `rep2`.
+- Explicit format: provide `rep1` and optionally `rep2` objects. If `rep2` is omitted, the script reuses `rep1`.
+
+When using explicit representative objects, each representative needs `first_name`, `last_name`, `email`, and `phone_number`. `business_title` and `job_position` are optional and default from the top-level fields when present.
 
 ```python
 customer_data = {
-    # ... basic fields ...
+    # ... business fields ...
+    "email": "compliance@example.com",
     "rep1": {
         "first_name": "John",
         "last_name": "Doe",
@@ -101,7 +107,7 @@ customer_data = {
 }
 ```
 
-If not provided, both representatives will use the primary contact information.
+Do not leave placeholder representative values from the example in a real customer file; Twilio will evaluate the values submitted in `rep1` and `rep2`.
 
 ## **Usage**
 
