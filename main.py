@@ -8,6 +8,7 @@ ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
 AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 SECONDARY_POLICY_SID_ENV = os.environ.get('TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID')
 SHAKEN_POLICY_SID_ENV = os.environ.get('TWILIO_SHAKEN_STIR_POLICY_SID')
+SECONDARY_CUSTOMER_PROFILE_POLICY_SID = "RNdfbf3fae0e1107f8aded0e7cead80bf5"
 SHAKEN_STIR_POLICY_SID = "RN7a97559effdf62d00f4298208492a5ea"
 
 if not ACCOUNT_SID or not AUTH_TOKEN:
@@ -20,14 +21,14 @@ client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
 def _secondary_policy_sid(primary_profile_sid):
     """
-    Twilio's secondary profile flow uses the policy SID from the approved
-    primary customer profile. Allow an env override for accounts that need it.
+    Use the Secondary Customer Profile policy SID, while still fetching the
+    configured Primary Customer Profile to validate it and log its status.
+    Allow an env override for accounts that need it.
     """
-    if SECONDARY_POLICY_SID_ENV:
-        return SECONDARY_POLICY_SID_ENV, None
-
     primary_profile = client.trusthub.v1.customer_profiles(primary_profile_sid).fetch()
-    return primary_profile.policy_sid, primary_profile
+    if SECONDARY_POLICY_SID_ENV:
+        return SECONDARY_POLICY_SID_ENV, primary_profile
+    return SECONDARY_CUSTOMER_PROFILE_POLICY_SID, primary_profile
 
 
 def _shaken_stir_policy_sid():
@@ -150,7 +151,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
 
         policy_details = {
             "secondary_policy_sid": SECONDARY_POLICY_SID,
-            "secondary_policy_source": "environment" if SECONDARY_POLICY_SID_ENV else "primary_customer_profile",
+            "secondary_policy_source": "environment" if SECONDARY_POLICY_SID_ENV else "hardcoded_default",
             "primary_profile_sid": primary_profile_sid,
             "shaken_policy_sid": SHAKEN_POLICY_SID,
             "shaken_policy_source": "environment" if SHAKEN_POLICY_SID_ENV else "documented_default"
@@ -324,7 +325,18 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         })
         print(f"Total phone numbers to register: {len(phone_number_sids)}")
 
-        # STEP 1: CREATE ADDRESS
+        # STEP 1: CREATE EMPTY SECONDARY CUSTOMER PROFILE
+        # Create the bundle before dependent components so account/policy
+        # restrictions fail before creating orphan Trust Hub entities.
+        log_step("create_customer_profile", "started")
+        profile = client.trusthub.v1.customer_profiles.create(
+            friendly_name=f"Secondary Profile: {customer_info['business_name']}",
+            email=customer_info['email'],
+            policy_sid=SECONDARY_POLICY_SID
+        )
+        log_step("create_customer_profile", "success", {"profile_sid": profile.sid})
+
+        # STEP 2: CREATE ADDRESS
         log_step("create_address", "started")
         address = client.addresses.create(
             customer_name=customer_info['business_name'],
@@ -337,7 +349,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         log_step("create_address", "success", {"address_sid": address.sid})
         print(f"Created Address: {address.sid}")
 
-        # STEP 2: CREATE SUPPORTING DOCUMENT
+        # STEP 3: CREATE SUPPORTING DOCUMENT
         # The Trust Hub secondary profile flow uses a customer_profile_address
         # document that links to the Address SID.
         log_step("create_address_document", "started")
@@ -348,7 +360,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         )
         log_step("create_address_document", "success", {"address_doc_sid": address_doc.sid})
 
-        # STEP 3: CREATE END USERS (Three Required per documentation)
+        # STEP 4: CREATE END USERS (Three Required per documentation)
         # 1. Business Legal Info (Required attributes: identity, industry, regions)
         log_step("create_business_info_end_user", "started")
         biz_info = client.trusthub.v1.end_users.create(
@@ -388,15 +400,6 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         )
         log_step("create_rep2_end_user", "success", {"rep2_sid": rep2.sid})
         print("Created End User entities (Business Info, Rep 1, and Rep 2).")
-
-        # STEP 4: CREATE SECONDARY CUSTOMER PROFILE
-        log_step("create_customer_profile", "started")
-        profile = client.trusthub.v1.customer_profiles.create(
-            friendly_name=f"Secondary Profile: {customer_info['business_name']}",
-            email=customer_info['email'],
-            policy_sid=SECONDARY_POLICY_SID
-        )
-        log_step("create_customer_profile", "success", {"profile_sid": profile.sid})
 
         # STEP 5: ASSIGN ALL ENTITIES TO THE PROFILE
         log_step("assign_entities_to_profile", "started")
@@ -561,13 +564,22 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         return result
 
     except TwilioRestException as e:
-        log_step("onboarding_failed", "error", {
+        error_details = {
             "error_type": "TwilioRestException",
             "error_message": str(e),
             "error_code": getattr(e, 'code', None),
             "error_status": getattr(e, 'status', None)
-        })
+        }
+        if "restricted via API for Primary Customer Profiles" in str(e):
+            error_details["diagnosis"] = (
+                "Twilio treated the policy SID as a Primary Customer Profile policy. "
+                "Confirm the parent Primary Customer Profile is configured as ISV/Reseller, "
+                "or set TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID to a Secondary Customer Profile policy SID."
+            )
+        log_step("onboarding_failed", "error", error_details)
         print(f"\nTwilio API Error: {e}")
+        if "diagnosis" in error_details:
+            print(f"Diagnosis: {error_details['diagnosis']}")
         print("The onboarding process was interrupted. Some resources may have been created.")
         return {"execution_log": execution_log, "error": str(e), "error_type": "TwilioRestException"}
     except KeyError as e:

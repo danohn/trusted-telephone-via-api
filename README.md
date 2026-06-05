@@ -58,7 +58,7 @@ export TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID='RNxxxxxxxxxxxxxxxxxxxxxxxxx
 export TWILIO_SHAKEN_STIR_POLICY_SID='RNxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
 ```
 
-The script validates Twilio credentials before making any API calls. The primary customer profile SID can be supplied through `TWILIO_PRIMARY_CUSTOMER_PROFILE_SID` or as `primary_customer_profile_sid` in each customer object. By default, the script fetches the Primary Customer Profile and uses its `policy_sid` to create the Secondary Customer Profile. The `TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID` environment variable is only needed as an override. The SHAKEN/STIR policy defaults to Twilio's documented policy SID unless `TWILIO_SHAKEN_STIR_POLICY_SID` is set.
+The script validates Twilio credentials before making any API calls. The primary customer profile SID can be supplied through `TWILIO_PRIMARY_CUSTOMER_PROFILE_SID` or as `primary_customer_profile_sid` in each customer object. By default, the script uses the hardcoded Secondary Customer Profile policy SID `RNdfbf3fae0e1107f8aded0e7cead80bf5`. The `TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID` environment variable can override that value when needed. The SHAKEN/STIR policy defaults to Twilio's documented policy SID unless `TWILIO_SHAKEN_STIR_POLICY_SID` is set.
 
 ## **Configuration Options**
 
@@ -211,7 +211,7 @@ The script will show the current status, creation dates, and assigned entities/p
 
 ### **Policy Resolution**
 
-The script first checks `TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID`. If it is missing, it fetches the configured Primary Customer Profile and uses that profile's `policy_sid` to create the Secondary Customer Profile.
+The script first checks `TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID`. If it is missing, it uses the hardcoded Secondary Customer Profile policy SID `RNdfbf3fae0e1107f8aded0e7cead80bf5`. The configured Primary Customer Profile is still fetched so the script can validate access and log its approval status before creating the Secondary Customer Profile.
 
 The SHAKEN/STIR Trust Product uses `TWILIO_SHAKEN_STIR_POLICY_SID` when set, otherwise it uses Twilio's documented SHAKEN/STIR policy SID. This avoids brittle friendly-name policy lookups.
 
@@ -255,6 +255,7 @@ Verification is an asynchronous process. The script creates a Trust Hub evaluati
 * **Missing Credentials**: If you see "Missing Twilio credentials", ensure `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` environment variables are set.
 * **Missing Required Fields**: The script validates required fields before making API calls. If you see "Missing required fields", ensure your `customer_info` dictionary includes all required fields listed in the Configuration section.
 * **Primary Profile Policy Missing**: If you see "Primary Customer Profile did not return a policy SID", verify the `primary_customer_profile_sid` value is a valid Trust Hub Customer Profile SID in the account used by your credentials.
+* **Primary Customer Profiles Restricted via API**: If Twilio says "This operation is restricted via API for Primary Customer Profiles. Use Twilio Console instead.", the policy SID is being treated as a Primary Customer Profile policy. Confirm the parent Primary Customer Profile is configured as ISV/Reseller, or set `TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID` to the correct Secondary Customer Profile policy SID.
 * **Phone Number Not Found**: Ensure phone numbers are formatted in E.164 format (e.g., `+14155551234`) and exist in your Twilio account before running the script. The script validates all numbers upfront.
 * **Incomplete Entities**: If the script fails at the submission step, ensure all required attributes (Business Industry, Regions of Operation, etc.) are valid enums. Valid values for `business_regions_of_operation` include: `USA_AND_CANADA`, `EUROPE`, `AFRICA`, `ASIA`, `AUSTRALIA`, `LATIN_AMERICA`.
 * **Duplicate Submissions**: Twilio may reject profiles that use identical data to an existing submission.
