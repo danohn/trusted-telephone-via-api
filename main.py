@@ -241,34 +241,49 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
             assigned_numbers = []
             failed_numbers = []
             already_assigned = []
+            existing_profile_endpoint_sids = {
+                endpoint.channel_endpoint_sid
+                for endpoint in client.trusthub.v1.customer_profiles(existing_profile.sid).customer_profiles_channel_endpoint_assignment.list()
+            }
+            existing_trust_product_endpoint_sids = {
+                endpoint.channel_endpoint_sid
+                for endpoint in client.trusthub.v1.trust_products(existing_trust_product.sid).trust_products_channel_endpoint_assignment.list()
+            }
 
             for phone_number, phone_sid in phone_number_sids:
-                try:
-                    client.trusthub.v1.customer_profiles(existing_profile.sid).customer_profiles_channel_endpoint_assignment.create(
-                        channel_endpoint_type="phone-number",
-                        channel_endpoint_sid=phone_sid
-                    )
-                    print(f"  ✓ Newly assigned {phone_number} to Customer Profile")
-                except TwilioRestException as e:
-                    if "already" not in str(e).lower():
-                        print(f"  ✗ Failed to assign {phone_number} to Customer Profile: {e}")
-                        failed_numbers.append((phone_number, str(e)))
-                        continue
+                if phone_sid in existing_profile_endpoint_sids:
+                    print(f"  INFO: {phone_number} already assigned to Customer Profile")
+                else:
+                    try:
+                        client.trusthub.v1.customer_profiles(existing_profile.sid).customer_profiles_channel_endpoint_assignment.create(
+                            channel_endpoint_type="phone-number",
+                            channel_endpoint_sid=phone_sid
+                        )
+                        print(f"  ✓ Newly assigned {phone_number} to Customer Profile")
+                    except TwilioRestException as e:
+                        if "already" not in str(e).lower():
+                            print(f"  ✗ Failed to assign {phone_number} to Customer Profile: {e}")
+                            failed_numbers.append((phone_number, str(e)))
+                            continue
 
-                try:
-                    client.trusthub.v1.trust_products(existing_trust_product.sid).customer_profiles_channel_endpoint_assignment.create(
-                        channel_endpoint_type="phone-number",
-                        channel_endpoint_sid=phone_sid
-                    )
-                    print(f"  ✓ Newly assigned {phone_number} to Trust Product")
-                    assigned_numbers.append(phone_number)
-                except TwilioRestException as e:
-                    if "already" in str(e).lower():
-                        print(f"  INFO: {phone_number} already assigned")
-                        already_assigned.append(phone_number)
-                    else:
-                        print(f"  ✗ Failed to assign {phone_number}: {e}")
-                        failed_numbers.append((phone_number, str(e)))
+                if phone_sid in existing_trust_product_endpoint_sids:
+                    print(f"  INFO: {phone_number} already assigned to Trust Product")
+                    already_assigned.append(phone_number)
+                else:
+                    try:
+                        client.trusthub.v1.trust_products(existing_trust_product.sid).trust_products_channel_endpoint_assignment.create(
+                            channel_endpoint_type="phone-number",
+                            channel_endpoint_sid=phone_sid
+                        )
+                        print(f"  ✓ Newly assigned {phone_number} to Trust Product")
+                        assigned_numbers.append(phone_number)
+                    except TwilioRestException as e:
+                        if "already" in str(e).lower():
+                            print(f"  INFO: {phone_number} already assigned to Trust Product")
+                            already_assigned.append(phone_number)
+                        else:
+                            print(f"  ✗ Failed to assign {phone_number}: {e}")
+                            failed_numbers.append((phone_number, str(e)))
 
             log_step("assign_new_phone_numbers", "success", {
                 "newly_assigned": len(assigned_numbers),
@@ -276,12 +291,44 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
                 "failed": len(failed_numbers)
             })
 
+            if failed_numbers:
+                return {
+                    "execution_log": execution_log,
+                    "error": "Failed to assign all phone numbers to existing resources",
+                    "failed_numbers": failed_numbers
+                }
+
+            trust_product_evaluation_result = None
+            if existing_trust_product.status in ("pending-review", "twilio-approved"):
+                log_step("submit_existing_trust_product_for_review", "skipped", {
+                    "trust_product_status": existing_trust_product.status
+                })
+            else:
+                log_step("evaluate_existing_trust_product", "started")
+                trust_product_evaluation = client.trusthub.v1.trust_products(existing_trust_product.sid).trust_products_evaluations.create(
+                    policy_sid=SHAKEN_POLICY_SID
+                )
+                trust_product_evaluation_result = _evaluation_result(trust_product_evaluation)
+                if trust_product_evaluation.status != "compliant":
+                    log_step("evaluate_existing_trust_product", "failed", trust_product_evaluation_result)
+                    return {
+                        "execution_log": execution_log,
+                        "error": "Existing Trust Product evaluation failed",
+                        "evaluation": trust_product_evaluation_result
+                    }
+                log_step("evaluate_existing_trust_product", "success", trust_product_evaluation_result)
+
+                log_step("submit_existing_trust_product_for_review", "started")
+                client.trusthub.v1.trust_products(existing_trust_product.sid).update(status="pending-review")
+                log_step("submit_existing_trust_product_for_review", "success")
+
             return {
                 "profile_sid": existing_profile.sid,
                 "trust_product_sid": existing_trust_product.sid,
                 "assigned_numbers": assigned_numbers + already_assigned,
                 "failed_numbers": failed_numbers,
                 "total_requested": len(phone_number_sids),
+                "trust_product_evaluation": trust_product_evaluation_result,
                 "execution_log": execution_log,
                 "reused_existing": True
             }
@@ -485,7 +532,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
 
         for phone_number, phone_sid in phone_number_sids:
             try:
-                client.trusthub.v1.trust_products(trust_product.sid).customer_profiles_channel_endpoint_assignment.create(
+                client.trusthub.v1.trust_products(trust_product.sid).trust_products_channel_endpoint_assignment.create(
                     channel_endpoint_type="phone-number",
                     channel_endpoint_sid=phone_sid
                 )

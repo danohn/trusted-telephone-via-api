@@ -86,7 +86,7 @@ def check_trust_product(trust_product_sid):
         # List assigned phone numbers
         print(f"\nAssigned Phone Numbers:")
         try:
-            endpoints = client.trusthub.v1.trust_products(trust_product_sid).customer_profiles_channel_endpoint_assignment.list()
+            endpoints = client.trusthub.v1.trust_products(trust_product_sid).trust_products_channel_endpoint_assignment.list()
             for endpoint in endpoints:
                 print(f"  - {endpoint.channel_endpoint_sid}")
         except Exception as e:
