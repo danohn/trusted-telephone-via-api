@@ -17,8 +17,8 @@
       "primary_customer_profile_sid": "BUxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
       "business_industry": "TECHNOLOGY",
       "business_regions_of_operation": "USA_AND_CANADA",
-      "business_title": "CEO",
-      "job_position": "CEO"
+      "business_title": "Director of Operations",
+      "job_position": "Director"
     },
     "phone_numbers": [
       "+15125556789",
@@ -46,7 +46,7 @@
         "email": "robert@healthcarepartners.example",
         "phone_number": "+16175551234",
         "business_title": "Managing Partner",
-        "job_position": "CEO"
+        "job_position": "Director"
       },
       "rep2": {
         "first_name": "Sarah",

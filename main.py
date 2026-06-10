@@ -10,6 +10,7 @@ SECONDARY_POLICY_SID_ENV = os.environ.get('TWILIO_SECONDARY_CUSTOMER_PROFILE_POL
 SHAKEN_POLICY_SID_ENV = os.environ.get('TWILIO_SHAKEN_STIR_POLICY_SID')
 SECONDARY_CUSTOMER_PROFILE_POLICY_SID = "RNdfbf3fae0e1107f8aded0e7cead80bf5"
 SHAKEN_STIR_POLICY_SID = "RN7a97559effdf62d00f4298208492a5ea"
+VALID_JOB_POSITIONS = {"CEO", "CFO", "VP", "GM", "General Counsel", "Director", "Other"}
 
 if not ACCOUNT_SID or not AUTH_TOKEN:
     raise ValueError(
@@ -129,6 +130,28 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         log_step("validate_required_fields", "failed", {"missing_fields": missing_fields})
         print(f"ERROR: Missing required fields in customer_info: {', '.join(missing_fields)}")
         return {"execution_log": execution_log, "error": f"Missing required fields: {', '.join(missing_fields)}"}
+
+    rep1_data = representative_data("rep1")
+    rep2_data = representative_data("rep2") if "rep2" in customer_info else rep1_data
+    invalid_job_positions = [
+        {"representative": rep_name, "job_position": rep_data.get("job_position")}
+        for rep_name, rep_data in (("rep1", rep1_data), ("rep2", rep2_data))
+        if rep_data.get("job_position") not in VALID_JOB_POSITIONS
+    ]
+    if invalid_job_positions:
+        valid_values = sorted(VALID_JOB_POSITIONS)
+        log_step("validate_required_fields", "failed", {
+            "invalid_job_positions": invalid_job_positions,
+            "valid_values": valid_values
+        })
+        print("ERROR: Invalid representative job_position value.")
+        print(f"  Valid values: {', '.join(valid_values)}")
+        return {
+            "execution_log": execution_log,
+            "error": "Invalid representative job_position value",
+            "invalid_job_positions": invalid_job_positions,
+            "valid_values": valid_values
+        }
     log_step("validate_required_fields", "success")
 
     try:
