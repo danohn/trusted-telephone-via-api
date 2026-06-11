@@ -1,5 +1,7 @@
 import os
 import json
+import re
+from urllib.parse import urlparse
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 
@@ -11,6 +13,80 @@ SHAKEN_POLICY_SID_ENV = os.environ.get('TWILIO_SHAKEN_STIR_POLICY_SID')
 SECONDARY_CUSTOMER_PROFILE_POLICY_SID = "RNdfbf3fae0e1107f8aded0e7cead80bf5"
 SHAKEN_STIR_POLICY_SID = "RN7a97559effdf62d00f4298208492a5ea"
 VALID_JOB_POSITIONS = {"CEO", "CFO", "VP", "GM", "General Counsel", "Director", "Other"}
+VALID_BUSINESS_IDENTITIES = {"direct_customer", "isv_reseller_or_partner", "unknown"}
+VALID_BUSINESS_TYPES = {
+    "Sole Proprietorship",
+    "Partnership",
+    "Limited Liability Corporation",
+    "Co-operative",
+    "Non-profit Corporation",
+    "Corporation",
+}
+VALID_BUSINESS_INDUSTRIES = {
+    "AGRICULTURE",
+    "AUTOMOTIVE",
+    "BANKING",
+    "CONSUMER",
+    "EDUCATION",
+    "ELECTRONICS",
+    "ENERGY",
+    "ENGINEERING",
+    "FAST_MOVING_CONSUMER_GOODS",
+    "FINANCIAL",
+    "FINTECH",
+    "FOOD_AND_BEVERAGE",
+    "GOVERNMENT",
+    "HEALTHCARE",
+    "HOSPITALITY",
+    "INSURANCE",
+    "JEWELRY",
+    "LEGAL",
+    "MANUFACTURING",
+    "MEDIA",
+    "NOT_FOR_PROFIT",
+    "OIL_AND_GAS",
+    "ONLINE",
+    "RAW_MATERIALS",
+    "REAL_ESTATE",
+    "RELIGION",
+    "RETAIL",
+    "TECHNOLOGY",
+    "TELECOMMUNICATIONS",
+    "TRANSPORTATION",
+    "TRAVEL",
+}
+VALID_BUSINESS_REGISTRATION_IDENTIFIERS = {
+    "EIN",
+    "CBN",
+    "CN",
+    "ACN",
+    "CIN",
+    "VAT",
+    "VATRN",
+    "RN",
+    "DUNS",
+    "Other",
+}
+VALID_BUSINESS_REGIONS_OF_OPERATION = {
+    "AFRICA",
+    "ASIA",
+    "EUROPE",
+    "LATIN_AMERICA",
+    "USA_AND_CANADA",
+    "AUSTRALIA",
+}
+US_STATE_CODES = {
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+    "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+    "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+    "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+    "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+    "DC",
+}
+CUSTOMER_PROFILE_SID_RE = re.compile(r"^BU[0-9a-fA-F]{32}$")
+E164_PHONE_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2}$")
 
 if not ACCOUNT_SID or not AUTH_TOKEN:
     raise ValueError(
@@ -51,6 +127,11 @@ def _evaluation_result(evaluation):
         "status": evaluation.status,
         "results": evaluation.results,
     }
+
+
+def _valid_http_url(value):
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def onboard_isv_customer(customer_info, target_phone_numbers):
@@ -133,24 +214,79 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
 
     rep1_data = representative_data("rep1")
     rep2_data = representative_data("rep2") if "rep2" in customer_info else rep1_data
-    invalid_job_positions = [
-        {"representative": rep_name, "job_position": rep_data.get("job_position")}
-        for rep_name, rep_data in (("rep1", rep1_data), ("rep2", rep2_data))
-        if rep_data.get("job_position") not in VALID_JOB_POSITIONS
-    ]
-    if invalid_job_positions:
-        valid_values = sorted(VALID_JOB_POSITIONS)
-        log_step("validate_required_fields", "failed", {
-            "invalid_job_positions": invalid_job_positions,
-            "valid_values": valid_values
+    validation_errors = []
+
+    def add_validation_error(field, value, valid_values, reason="invalid value"):
+        validation_errors.append({
+            "field": field,
+            "value": value,
+            "reason": reason,
+            "valid_values": valid_values,
         })
-        print("ERROR: Invalid representative job_position value.")
-        print(f"  Valid values: {', '.join(valid_values)}")
+
+    enum_checks = [
+        ("business_type", customer_info.get("business_type"), VALID_BUSINESS_TYPES),
+        ("business_identity", customer_info.get("business_identity", "direct_customer"), VALID_BUSINESS_IDENTITIES),
+        ("business_industry", customer_info.get("business_industry", "TECHNOLOGY"), VALID_BUSINESS_INDUSTRIES),
+        (
+            "business_registration_identifier",
+            customer_info.get("business_registration_identifier", "EIN"),
+            VALID_BUSINESS_REGISTRATION_IDENTIFIERS,
+        ),
+        (
+            "business_regions_of_operation",
+            customer_info.get("business_regions_of_operation", "USA_AND_CANADA"),
+            VALID_BUSINESS_REGIONS_OF_OPERATION,
+        ),
+    ]
+    for field, value, valid_values in enum_checks:
+        if value not in valid_values:
+            add_validation_error(field, value, sorted(valid_values))
+
+    for rep_name, rep_data in (("rep1", rep1_data), ("rep2", rep2_data)):
+        if rep_data.get("job_position") not in VALID_JOB_POSITIONS:
+            add_validation_error(f"{rep_name}.job_position", rep_data.get("job_position"), sorted(VALID_JOB_POSITIONS))
+        if not EMAIL_RE.match(rep_data.get("email", "")):
+            add_validation_error(f"{rep_name}.email", rep_data.get("email"), "valid email address")
+        if not E164_PHONE_RE.match(rep_data.get("phone_number", "")):
+            add_validation_error(f"{rep_name}.phone_number", rep_data.get("phone_number"), "E.164 phone number, e.g. +14155551234")
+
+    if not EMAIL_RE.match(customer_info.get("email", "")):
+        add_validation_error("email", customer_info.get("email"), "valid email address")
+    if "phone" in customer_info and not E164_PHONE_RE.match(customer_info.get("phone", "")):
+        add_validation_error("phone", customer_info.get("phone"), "E.164 phone number, e.g. +14155551234")
+    if not _valid_http_url(customer_info.get("website", "")):
+        add_validation_error("website", customer_info.get("website"), "HTTP or HTTPS URL")
+    if not COUNTRY_CODE_RE.match(customer_info.get("country", "")):
+        add_validation_error("country", customer_info.get("country"), "two-letter ISO country code, e.g. US")
+    if customer_info.get("country") == "US" and customer_info.get("region") not in US_STATE_CODES:
+        add_validation_error("region", customer_info.get("region"), sorted(US_STATE_CODES), "US state or DC code")
+    if not CUSTOMER_PROFILE_SID_RE.match(primary_profile_sid):
+        add_validation_error("primary_customer_profile_sid", primary_profile_sid, "BU SID with 32 hex characters")
+
+    phone_numbers_for_validation = (
+        [target_phone_numbers] if isinstance(target_phone_numbers, str) else target_phone_numbers
+    )
+    if not isinstance(phone_numbers_for_validation, list) or not phone_numbers_for_validation:
+        add_validation_error("phone_numbers", target_phone_numbers, "non-empty list of E.164 phone numbers")
+    else:
+        for index, phone_number in enumerate(phone_numbers_for_validation):
+            if not E164_PHONE_RE.match(str(phone_number)):
+                add_validation_error(
+                    f"phone_numbers[{index}]",
+                    phone_number,
+                    "E.164 phone number, e.g. +14155551234",
+                )
+
+    if validation_errors:
+        log_step("validate_required_fields", "failed", {"validation_errors": validation_errors})
+        print("ERROR: Invalid customer configuration values.")
+        for error in validation_errors:
+            print(f"  - {error['field']}: {error['value']} ({error['reason']})")
         return {
             "execution_log": execution_log,
-            "error": "Invalid representative job_position value",
-            "invalid_job_positions": invalid_job_positions,
-            "valid_values": valid_values
+            "error": "Invalid customer configuration values",
+            "validation_errors": validation_errors,
         }
     log_step("validate_required_fields", "success")
 

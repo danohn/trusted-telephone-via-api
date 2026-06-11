@@ -69,13 +69,26 @@ The script validates Twilio credentials before making any API calls. The primary
 - `primary_customer_profile_sid` unless `TWILIO_PRIMARY_CUSTOMER_PROFILE_SID` is set
 
 ### **Optional Fields (with defaults)**
+- `business_identity`: Default `"direct_customer"`
+  - Valid values: `direct_customer`, `isv_reseller_or_partner`, `unknown`
+- `business_registration_identifier`: Default `"EIN"`
+  - Valid values: `EIN`, `CBN`, `CN`, `ACN`, `CIN`, `VAT`, `VATRN`, `RN`, `DUNS`, `Other`
 - `business_industry`: Default `"TECHNOLOGY"`
+  - Valid values: `AGRICULTURE`, `AUTOMOTIVE`, `BANKING`, `CONSUMER`, `EDUCATION`, `ELECTRONICS`, `ENERGY`, `ENGINEERING`, `FAST_MOVING_CONSUMER_GOODS`, `FINANCIAL`, `FINTECH`, `FOOD_AND_BEVERAGE`, `GOVERNMENT`, `HEALTHCARE`, `HOSPITALITY`, `INSURANCE`, `JEWELRY`, `LEGAL`, `MANUFACTURING`, `MEDIA`, `NOT_FOR_PROFIT`, `OIL_AND_GAS`, `ONLINE`, `RAW_MATERIALS`, `REAL_ESTATE`, `RELIGION`, `RETAIL`, `TECHNOLOGY`, `TELECOMMUNICATIONS`, `TRANSPORTATION`, `TRAVEL`
 - `business_regions_of_operation`: Default `"USA_AND_CANADA"`
   - Valid values: `USA_AND_CANADA`, `EUROPE`, `AFRICA`, `ASIA`, `AUSTRALIA`, `LATIN_AMERICA`
 - `job_position`: Default `"Director"`
   - Valid values: `CEO`, `CFO`, `VP`, `GM`, `General Counsel`, `Director`, `Other`
 - `business_title`: Defaults to `job_position`
   - Use this for free-form titles such as `"Director of Operations"`
+
+### **Validated Field Formats**
+- `website`: Must be an HTTP or HTTPS URL.
+- `email`, representative `email`: Must look like an email address.
+- `phone`, representative `phone_number`, `phone_numbers`: Must be E.164 format, e.g. `+14155551234`.
+- `country`: Must be a two-letter uppercase ISO country code, e.g. `US`.
+- `region`: For `country` `"US"`, must be a two-letter US state or `DC` code.
+- `primary_customer_profile_sid`: Must be a `BU` SID with 32 hexadecimal characters.
 
 ### **Representative Data**
 
