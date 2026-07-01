@@ -65,6 +65,10 @@ def batch_onboard(customers_file):
                     "assigned_numbers": len(result['assigned_numbers']),
                     "failed_numbers": len(result['failed_numbers']),
                     "reused_existing": result.get('reused_existing', False),
+                    "reused_existing_profile": result.get('reused_existing_profile', False),
+                    "created_profile": result.get('created_profile', not result.get('reused_existing_profile', False)),
+                    "reused_existing_trust_product": result.get('reused_existing_trust_product', False),
+                    "created_trust_product": result.get('created_trust_product', not result.get('reused_existing_trust_product', False)),
                     "execution_log": result.get('execution_log', [])
                 })
             elif result and 'error' in result:
@@ -114,10 +118,10 @@ def batch_onboard(customers_file):
     for result in results:
         print(f"\n{result['business_name']}: {result['status'].upper()}")
         if result['status'] == 'success':
-            if result.get('reused_existing'):
-                print(f"  [REUSED] Existing resources")
-            else:
-                print(f"  [CREATED] New resources")
+            profile_action = "reused" if result.get('reused_existing_profile') else "created"
+            trust_product_action = "reused" if result.get('reused_existing_trust_product') else "created"
+            print(f"  Profile: {profile_action}")
+            print(f"  Trust Product: {trust_product_action}")
             print(f"  Profile SID: {result['profile_sid']}")
             print(f"  Trust Product SID: {result['trust_product_sid']}")
             print(f"  Numbers Assigned: {result['assigned_numbers']}")

@@ -75,6 +75,9 @@ VALID_BUSINESS_REGIONS_OF_OPERATION = {
     "USA_AND_CANADA",
     "AUSTRALIA",
 }
+REUSABLE_PROFILE_STATUSES = {"twilio-approved", "pending-review"}
+SECONDARY_PROFILE_FRIENDLY_NAME_PREFIX = "Secondary Profile:"
+TRUST_PRODUCT_FRIENDLY_NAME_PREFIX = "STIR/SHAKEN:"
 US_STATE_CODES = {
     "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
     "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
@@ -132,6 +135,73 @@ def _evaluation_result(evaluation):
 def _valid_http_url(value):
     parsed = urlparse(value)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def _normalize_business_resource_name(friendly_name, prefix=None):
+    normalized = (friendly_name or "").strip()
+    if prefix and normalized.casefold().startswith(prefix.casefold()):
+        normalized = normalized[len(prefix):].strip()
+    return normalized.casefold()
+
+
+def _resource_candidate(resource):
+    return {
+        "sid": resource.sid,
+        "friendly_name": resource.friendly_name,
+        "status": getattr(resource, "status", None),
+    }
+
+
+def _select_existing_profile(profiles, business_name):
+    business_name_key = _normalize_business_resource_name(business_name)
+    matches = [
+        profile
+        for profile in profiles
+        if _normalize_business_resource_name(
+            profile.friendly_name,
+            SECONDARY_PROFILE_FRIENDLY_NAME_PREFIX,
+        ) == business_name_key
+    ]
+    reusable_matches = [
+        profile
+        for profile in matches
+        if getattr(profile, "status", None) in REUSABLE_PROFILE_STATUSES
+    ]
+
+    if len(reusable_matches) == 1:
+        return reusable_matches[0], None
+    if len(reusable_matches) > 1:
+        return None, {
+            "error": "Multiple reusable Secondary Customer Profiles matched this business name",
+            "candidates": [_resource_candidate(profile) for profile in reusable_matches],
+        }
+    if matches:
+        return None, {
+            "error": "Existing Secondary Customer Profile matched this business name but is not reusable",
+            "reusable_statuses": sorted(REUSABLE_PROFILE_STATUSES),
+            "candidates": [_resource_candidate(profile) for profile in matches],
+        }
+    return None, None
+
+
+def _select_existing_trust_product(trust_products, business_name):
+    business_name_key = _normalize_business_resource_name(business_name)
+    matches = [
+        trust_product
+        for trust_product in trust_products
+        if _normalize_business_resource_name(
+            trust_product.friendly_name,
+            TRUST_PRODUCT_FRIENDLY_NAME_PREFIX,
+        ) == business_name_key
+    ]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, {
+            "error": "Multiple Trust Products matched this business name",
+            "candidates": [_resource_candidate(trust_product) for trust_product in matches],
+        }
+    return None, None
 
 
 def onboard_isv_customer(customer_info, target_phone_numbers):
@@ -327,177 +397,61 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         existing_profile = None
         existing_trust_product = None
 
-        # Check for existing customer profile with matching business name
         profiles = client.trusthub.v1.customer_profiles.list(
             policy_sid=SECONDARY_POLICY_SID,
             limit=100
         )
-        for p in profiles:
-            if customer_info['business_name'] in p.friendly_name:
-                existing_profile = p
-                log_step("check_existing_resources", "info", {
-                    "found_existing_profile": True,
-                    "profile_sid": p.sid,
-                    "profile_status": p.status
-                })
-                print(f"Found existing Customer Profile: {p.sid} (status: {p.status})")
-                break
+        existing_profile, profile_selection_error = _select_existing_profile(
+            profiles,
+            customer_info["business_name"],
+        )
+        if profile_selection_error:
+            log_step("check_existing_resources", "failed", profile_selection_error)
+            print(f"ERROR: {profile_selection_error['error']}")
+            return {
+                "execution_log": execution_log,
+                "error": profile_selection_error["error"],
+                "profile_candidates": profile_selection_error.get("candidates", []),
+            }
+        if existing_profile:
+            log_step("check_existing_resources", "info", {
+                "found_existing_profile": True,
+                "profile_sid": existing_profile.sid,
+                "profile_status": existing_profile.status
+            })
+            print(f"Found reusable Customer Profile: {existing_profile.sid} (status: {existing_profile.status})")
 
-        # Check for existing trust product with matching business name
         trust_products = client.trusthub.v1.trust_products.list(
             policy_sid=SHAKEN_POLICY_SID,
             limit=100
         )
-        for tp in trust_products:
-            if customer_info['business_name'] in tp.friendly_name:
-                existing_trust_product = tp
-                log_step("check_existing_resources", "info", {
-                    "found_existing_trust_product": True,
-                    "trust_product_sid": tp.sid,
-                    "trust_product_status": tp.status
-                })
-                print(f"Found existing Trust Product: {tp.sid} (status: {tp.status})")
-                break
-
-        if existing_profile and existing_trust_product:
-            log_step("check_existing_resources", "success", {
-                "action": "reusing_existing_resources",
-                "profile_sid": existing_profile.sid,
-                "trust_product_sid": existing_trust_product.sid
-            })
-            print("\nWARNING: Resources already exist. Checking phone number assignments...")
-
-            # Check which phone numbers are already assigned
-            # Convert single phone number to list for backwards compatibility
-            if isinstance(target_phone_numbers, str):
-                target_phone_numbers = [target_phone_numbers]
-
-            # Lookup all phone number SIDs
-            log_step("lookup_phone_numbers", "started", {"phone_count": len(target_phone_numbers)})
-            phone_number_sids = []
-            not_found_numbers = []
-            for phone_number in target_phone_numbers:
-                number_list = client.incoming_phone_numbers.list(phone_number=phone_number, limit=1)
-                if number_list:
-                    phone_number_sids.append((phone_number, number_list[0].sid))
-                else:
-                    not_found_numbers.append(phone_number)
-
-            if not phone_number_sids:
-                log_step("lookup_phone_numbers", "failed", {
-                    "error": "No valid phone numbers found",
-                    "not_found": not_found_numbers
-                })
-                return {"execution_log": execution_log, "error": "No valid phone numbers found in account"}
-
-            log_step("lookup_phone_numbers", "success", {
-                "found_count": len(phone_number_sids),
-                "not_found_count": len(not_found_numbers)
-            })
-
-            # Assign any unassigned phone numbers
-            log_step("assign_new_phone_numbers", "started")
-            assigned_numbers = []
-            failed_numbers = []
-            already_assigned = []
-            existing_profile_endpoint_sids = {
-                endpoint.channel_endpoint_sid
-                for endpoint in client.trusthub.v1.customer_profiles(existing_profile.sid).customer_profiles_channel_endpoint_assignment.list()
-            }
-            existing_trust_product_endpoint_sids = {
-                endpoint.channel_endpoint_sid
-                for endpoint in client.trusthub.v1.trust_products(existing_trust_product.sid).trust_products_channel_endpoint_assignment.list()
-            }
-
-            for phone_number, phone_sid in phone_number_sids:
-                if phone_sid in existing_profile_endpoint_sids:
-                    print(f"  INFO: {phone_number} already assigned to Customer Profile")
-                else:
-                    try:
-                        client.trusthub.v1.customer_profiles(existing_profile.sid).customer_profiles_channel_endpoint_assignment.create(
-                            channel_endpoint_type="phone-number",
-                            channel_endpoint_sid=phone_sid
-                        )
-                        print(f"  ✓ Newly assigned {phone_number} to Customer Profile")
-                    except TwilioRestException as e:
-                        if "already" not in str(e).lower():
-                            print(f"  ✗ Failed to assign {phone_number} to Customer Profile: {e}")
-                            failed_numbers.append((phone_number, str(e)))
-                            continue
-
-                if phone_sid in existing_trust_product_endpoint_sids:
-                    print(f"  INFO: {phone_number} already assigned to Trust Product")
-                    already_assigned.append(phone_number)
-                else:
-                    try:
-                        client.trusthub.v1.trust_products(existing_trust_product.sid).trust_products_channel_endpoint_assignment.create(
-                            channel_endpoint_type="phone-number",
-                            channel_endpoint_sid=phone_sid
-                        )
-                        print(f"  ✓ Newly assigned {phone_number} to Trust Product")
-                        assigned_numbers.append(phone_number)
-                    except TwilioRestException as e:
-                        if "already" in str(e).lower():
-                            print(f"  INFO: {phone_number} already assigned to Trust Product")
-                            already_assigned.append(phone_number)
-                        else:
-                            print(f"  ✗ Failed to assign {phone_number}: {e}")
-                            failed_numbers.append((phone_number, str(e)))
-
-            log_step("assign_new_phone_numbers", "success", {
-                "newly_assigned": len(assigned_numbers),
-                "already_assigned": len(already_assigned),
-                "failed": len(failed_numbers)
-            })
-
-            if failed_numbers:
-                return {
-                    "execution_log": execution_log,
-                    "error": "Failed to assign all phone numbers to existing resources",
-                    "failed_numbers": failed_numbers
-                }
-
-            trust_product_evaluation_result = None
-            if existing_trust_product.status in ("pending-review", "twilio-approved"):
-                log_step("submit_existing_trust_product_for_review", "skipped", {
-                    "trust_product_status": existing_trust_product.status
-                })
-            else:
-                log_step("evaluate_existing_trust_product", "started")
-                trust_product_evaluation = client.trusthub.v1.trust_products(existing_trust_product.sid).trust_products_evaluations.create(
-                    policy_sid=SHAKEN_POLICY_SID
-                )
-                trust_product_evaluation_result = _evaluation_result(trust_product_evaluation)
-                if trust_product_evaluation.status != "compliant":
-                    log_step("evaluate_existing_trust_product", "failed", trust_product_evaluation_result)
-                    return {
-                        "execution_log": execution_log,
-                        "error": "Existing Trust Product evaluation failed",
-                        "evaluation": trust_product_evaluation_result
-                    }
-                log_step("evaluate_existing_trust_product", "success", trust_product_evaluation_result)
-
-                log_step("submit_existing_trust_product_for_review", "started")
-                client.trusthub.v1.trust_products(existing_trust_product.sid).update(status="pending-review")
-                log_step("submit_existing_trust_product_for_review", "success")
-
+        existing_trust_product, trust_product_selection_error = _select_existing_trust_product(
+            trust_products,
+            customer_info["business_name"],
+        )
+        if trust_product_selection_error:
+            log_step("check_existing_resources", "failed", trust_product_selection_error)
+            print(f"ERROR: {trust_product_selection_error['error']}")
             return {
-                "profile_sid": existing_profile.sid,
-                "trust_product_sid": existing_trust_product.sid,
-                "assigned_numbers": assigned_numbers + already_assigned,
-                "failed_numbers": failed_numbers,
-                "total_requested": len(phone_number_sids),
-                "trust_product_evaluation": trust_product_evaluation_result,
                 "execution_log": execution_log,
-                "reused_existing": True
+                "error": trust_product_selection_error["error"],
+                "trust_product_candidates": trust_product_selection_error.get("candidates", []),
             }
-        else:
-            log_step("check_existing_resources", "success", {
-                "action": "creating_new_resources",
-                "existing_profile": existing_profile.sid if existing_profile else None,
-                "existing_trust_product": existing_trust_product.sid if existing_trust_product else None
+        if existing_trust_product:
+            log_step("check_existing_resources", "info", {
+                "found_existing_trust_product": True,
+                "trust_product_sid": existing_trust_product.sid,
+                "trust_product_status": existing_trust_product.status
             })
-            print("No existing resources found. Creating new resources...")
+            print(f"Found existing Trust Product: {existing_trust_product.sid} (status: {existing_trust_product.status})")
+
+        log_step("check_existing_resources", "success", {
+            "action": "reuse_or_create_resources",
+            "existing_profile": existing_profile.sid if existing_profile else None,
+            "existing_trust_product": existing_trust_product.sid if existing_trust_product else None,
+            "will_create_profile": existing_profile is None,
+            "will_create_trust_product": existing_trust_product is None
+        })
 
         # Convert single phone number to list for backwards compatibility
         if isinstance(target_phone_numbers, str):
@@ -531,97 +485,117 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         })
         print(f"Total phone numbers to register: {len(phone_number_sids)}")
 
-        # STEP 1: CREATE EMPTY SECONDARY CUSTOMER PROFILE
-        # Create the bundle before dependent components so account/policy
-        # restrictions fail before creating orphan Trust Hub entities.
-        log_step("create_customer_profile", "started")
-        profile = client.trusthub.v1.customer_profiles.create(
-            friendly_name=f"Secondary Profile: {customer_info['business_name']}",
-            email=customer_info['email'],
-            policy_sid=SECONDARY_POLICY_SID
-        )
-        log_step("create_customer_profile", "success", {"profile_sid": profile.sid})
+        profile = existing_profile
+        created_profile = profile is None
+        profile_evaluation_result = None
 
-        # STEP 2: CREATE ADDRESS
-        log_step("create_address", "started")
-        address = client.addresses.create(
-            customer_name=customer_info['business_name'],
-            street=customer_info['street'],
-            city=customer_info['city'],
-            region=customer_info['region'],
-            postal_code=customer_info['postal_code'],
-            iso_country=customer_info['country']
-        )
-        log_step("create_address", "success", {"address_sid": address.sid})
-        print(f"Created Address: {address.sid}")
+        if profile:
+            log_step("reuse_customer_profile", "success", {
+                "profile_sid": profile.sid,
+                "profile_status": profile.status
+            })
+            print(f"Reusing Customer Profile: {profile.sid} (status: {profile.status})")
+        else:
+            # STEP 1: CREATE EMPTY SECONDARY CUSTOMER PROFILE
+            # Create the bundle before dependent components so account/policy
+            # restrictions fail before creating orphan Trust Hub entities.
+            log_step("create_customer_profile", "started")
+            profile = client.trusthub.v1.customer_profiles.create(
+                friendly_name=f"Secondary Profile: {customer_info['business_name']}",
+                email=customer_info['email'],
+                policy_sid=SECONDARY_POLICY_SID
+            )
+            log_step("create_customer_profile", "success", {"profile_sid": profile.sid})
 
-        # STEP 3: CREATE SUPPORTING DOCUMENT
-        # The Trust Hub secondary profile flow uses a customer_profile_address
-        # document that links to the Address SID.
-        log_step("create_address_document", "started")
-        address_doc = client.trusthub.v1.supporting_documents.create(
-            friendly_name=f"Address - {customer_info['business_name']}",
-            type="customer_profile_address",
-            attributes={"address_sids": address.sid}
-        )
-        log_step("create_address_document", "success", {"address_doc_sid": address_doc.sid})
+            # STEP 2: CREATE ADDRESS
+            log_step("create_address", "started")
+            address = client.addresses.create(
+                customer_name=customer_info['business_name'],
+                street=customer_info['street'],
+                city=customer_info['city'],
+                region=customer_info['region'],
+                postal_code=customer_info['postal_code'],
+                iso_country=customer_info['country']
+            )
+            log_step("create_address", "success", {"address_sid": address.sid})
+            print(f"Created Address: {address.sid}")
 
-        # STEP 4: CREATE END USERS (Three Required per documentation)
-        # 1. Business Legal Info (Required attributes: identity, industry, regions)
-        log_step("create_business_info_end_user", "started")
-        biz_info = client.trusthub.v1.end_users.create(
-            friendly_name="Business Legal Information",
-            type="customer_profile_business_information",
-            attributes={
-                "business_name": customer_info['business_name'],
-                "business_type": customer_info['business_type'],
-                "business_registration_number": customer_info['tax_id'],
-                "business_registration_identifier": customer_info.get('business_registration_identifier', 'EIN'),
-                "business_identity": customer_info.get('business_identity', 'direct_customer'),
-                "business_industry": customer_info.get('business_industry', 'TECHNOLOGY'),
-                "business_regions_of_operation": customer_info.get('business_regions_of_operation', 'USA_AND_CANADA'),
-                "website_url": customer_info['website']
-            }
-        )
-        log_step("create_business_info_end_user", "success", {"biz_info_sid": biz_info.sid})
+            # STEP 3: CREATE SUPPORTING DOCUMENT
+            # The Trust Hub secondary profile flow uses a customer_profile_address
+            # document that links to the Address SID.
+            log_step("create_address_document", "started")
+            address_doc = client.trusthub.v1.supporting_documents.create(
+                friendly_name=f"Address - {customer_info['business_name']}",
+                type="customer_profile_address",
+                attributes={"address_sids": address.sid}
+            )
+            log_step("create_address_document", "success", {"address_doc_sid": address_doc.sid})
 
-        # 2. Authorized Representative 1
-        log_step("create_rep1_end_user", "started")
-        rep1_data = representative_data("rep1")
-        rep1 = client.trusthub.v1.end_users.create(
-            friendly_name="Primary Authorized Representative",
-            type="authorized_representative_1",
-            attributes=rep1_data
-        )
-        log_step("create_rep1_end_user", "success", {"rep1_sid": rep1.sid})
+            # STEP 4: CREATE END USERS (Three Required per documentation)
+            # 1. Business Legal Info (Required attributes: identity, industry, regions)
+            log_step("create_business_info_end_user", "started")
+            biz_info = client.trusthub.v1.end_users.create(
+                friendly_name="Business Legal Information",
+                type="customer_profile_business_information",
+                attributes={
+                    "business_name": customer_info['business_name'],
+                    "business_type": customer_info['business_type'],
+                    "business_registration_number": customer_info['tax_id'],
+                    "business_registration_identifier": customer_info.get('business_registration_identifier', 'EIN'),
+                    "business_identity": customer_info.get('business_identity', 'direct_customer'),
+                    "business_industry": customer_info.get('business_industry', 'TECHNOLOGY'),
+                    "business_regions_of_operation": customer_info.get('business_regions_of_operation', 'USA_AND_CANADA'),
+                    "website_url": customer_info['website']
+                }
+            )
+            log_step("create_business_info_end_user", "success", {"biz_info_sid": biz_info.sid})
 
-        # 3. Authorized Representative 2 (The policy requires two distinct rep assignments)
-        # If rep2 data not provided, use rep1 data (common for small businesses)
-        log_step("create_rep2_end_user", "started")
-        rep2_data = representative_data("rep2") if "rep2" in customer_info else rep1_data
-        rep2 = client.trusthub.v1.end_users.create(
-            friendly_name="Secondary Authorized Representative",
-            type="authorized_representative_2",
-            attributes=rep2_data
-        )
-        log_step("create_rep2_end_user", "success", {"rep2_sid": rep2.sid})
-        print("Created End User entities (Business Info, Rep 1, and Rep 2).")
+            # 2. Authorized Representative 1
+            log_step("create_rep1_end_user", "started")
+            rep1_data = representative_data("rep1")
+            rep1 = client.trusthub.v1.end_users.create(
+                friendly_name="Primary Authorized Representative",
+                type="authorized_representative_1",
+                attributes=rep1_data
+            )
+            log_step("create_rep1_end_user", "success", {"rep1_sid": rep1.sid})
 
-        # STEP 5: ASSIGN ALL ENTITIES TO THE PROFILE
-        log_step("assign_entities_to_profile", "started")
-        entities_to_assign = [primary_profile_sid, address_doc.sid, biz_info.sid, rep1.sid, rep2.sid]
-        for i, sid in enumerate(entities_to_assign):
-            client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_entity_assignments.create(object_sid=sid)
-        log_step("assign_entities_to_profile", "success", {
-            "entities_assigned": len(entities_to_assign),
-            "entity_sids": entities_to_assign
-        })
+            # 3. Authorized Representative 2 (The policy requires two distinct rep assignments)
+            # If rep2 data not provided, use rep1 data (common for small businesses)
+            log_step("create_rep2_end_user", "started")
+            rep2_data = representative_data("rep2") if "rep2" in customer_info else rep1_data
+            rep2 = client.trusthub.v1.end_users.create(
+                friendly_name="Secondary Authorized Representative",
+                type="authorized_representative_2",
+                attributes=rep2_data
+            )
+            log_step("create_rep2_end_user", "success", {"rep2_sid": rep2.sid})
+            print("Created End User entities (Business Info, Rep 1, and Rep 2).")
+
+            # STEP 5: ASSIGN ALL ENTITIES TO THE PROFILE
+            log_step("assign_entities_to_profile", "started")
+            entities_to_assign = [primary_profile_sid, address_doc.sid, biz_info.sid, rep1.sid, rep2.sid]
+            for sid in entities_to_assign:
+                client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_entity_assignments.create(object_sid=sid)
+            log_step("assign_entities_to_profile", "success", {
+                "entities_assigned": len(entities_to_assign),
+                "entity_sids": entities_to_assign
+            })
 
         # STEP 6: ASSIGN ALL PHONE NUMBERS TO SECONDARY CUSTOMER PROFILE
         log_step("assign_phone_numbers_to_profile", "started", {"phone_count": len(phone_number_sids)})
         profile_assigned_numbers = []
         profile_failed_numbers = []
+        profile_already_assigned_numbers = []
+        existing_profile_endpoint_sids = {
+            endpoint.channel_endpoint_sid
+            for endpoint in client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_channel_endpoint_assignment.list()
+        }
         for phone_number, phone_sid in phone_number_sids:
+            if phone_sid in existing_profile_endpoint_sids:
+                print(f"  INFO: {phone_number} already assigned to Customer Profile")
+                profile_already_assigned_numbers.append(phone_number)
+                continue
             try:
                 client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_channel_endpoint_assignment.create(
                     channel_endpoint_type="phone-number",
@@ -646,50 +620,81 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
 
         log_step("assign_phone_numbers_to_profile", "success", {
             "assigned_count": len(profile_assigned_numbers),
+            "already_assigned_count": len(profile_already_assigned_numbers),
             "assigned_numbers": profile_assigned_numbers
         })
 
         # STEP 7: EVALUATE AND SUBMIT PROFILE FOR REVIEW
-        log_step("evaluate_profile", "started")
-        profile_evaluation = client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_evaluations.create(
-            policy_sid=SECONDARY_POLICY_SID
-        )
-        profile_evaluation_result = _evaluation_result(profile_evaluation)
-        if profile_evaluation.status != "compliant":
-            log_step("evaluate_profile", "failed", profile_evaluation_result)
-            return {
-                "execution_log": execution_log,
-                "error": "Customer Profile evaluation failed",
-                "evaluation": profile_evaluation_result
-            }
-        log_step("evaluate_profile", "success", profile_evaluation_result)
+        if created_profile:
+            log_step("evaluate_profile", "started")
+            profile_evaluation = client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_evaluations.create(
+                policy_sid=SECONDARY_POLICY_SID
+            )
+            profile_evaluation_result = _evaluation_result(profile_evaluation)
+            if profile_evaluation.status != "compliant":
+                log_step("evaluate_profile", "failed", profile_evaluation_result)
+                return {
+                    "execution_log": execution_log,
+                    "error": "Customer Profile evaluation failed",
+                    "evaluation": profile_evaluation_result
+                }
+            log_step("evaluate_profile", "success", profile_evaluation_result)
 
-        log_step("submit_profile_for_review", "started")
-        client.trusthub.v1.customer_profiles(profile.sid).update(status="pending-review")
-        log_step("submit_profile_for_review", "success")
-        print(f"Secondary Customer Profile {profile.sid} submitted for review.")
+            log_step("submit_profile_for_review", "started")
+            client.trusthub.v1.customer_profiles(profile.sid).update(status="pending-review")
+            log_step("submit_profile_for_review", "success")
+            print(f"Secondary Customer Profile {profile.sid} submitted for review.")
+        else:
+            log_step("evaluate_profile", "skipped", {
+                "reason": "reused_existing_profile",
+                "profile_status": profile.status
+            })
 
         # STEP 8: CREATE STIR/SHAKEN TRUST PRODUCT
-        log_step("create_trust_product", "started")
-        trust_product = client.trusthub.v1.trust_products.create(
-            friendly_name=f"STIR/SHAKEN: {customer_info['business_name']}",
-            email=customer_info['email'],
-            policy_sid=SHAKEN_POLICY_SID
-        )
-        log_step("create_trust_product", "success", {"trust_product_sid": trust_product.sid})
+        trust_product = existing_trust_product
+        created_trust_product = trust_product is None
+        if trust_product:
+            log_step("reuse_trust_product", "success", {
+                "trust_product_sid": trust_product.sid,
+                "trust_product_status": trust_product.status
+            })
+            print(f"Reusing Trust Product: {trust_product.sid} (status: {trust_product.status})")
+        else:
+            log_step("create_trust_product", "started")
+            trust_product = client.trusthub.v1.trust_products.create(
+                friendly_name=f"STIR/SHAKEN: {customer_info['business_name']}",
+                email=customer_info['email'],
+                policy_sid=SHAKEN_POLICY_SID
+            )
+            log_step("create_trust_product", "success", {"trust_product_sid": trust_product.sid})
 
         # STEP 9: LINK SECONDARY PROFILE TO TRUST PRODUCT
         log_step("link_profile_to_trust_product", "started")
-        client.trusthub.v1.trust_products(trust_product.sid).trust_products_entity_assignments.create(object_sid=profile.sid)
-        log_step("link_profile_to_trust_product", "success")
+        try:
+            client.trusthub.v1.trust_products(trust_product.sid).trust_products_entity_assignments.create(object_sid=profile.sid)
+            log_step("link_profile_to_trust_product", "success")
+        except TwilioRestException as e:
+            if "already" in str(e).lower():
+                log_step("link_profile_to_trust_product", "success", {"already_linked": True})
+            else:
+                raise
 
         # STEP 10: ASSIGN ALL PHONE NUMBERS TO TRUST PRODUCT (Channel Endpoints)
         log_step("assign_phone_numbers", "started", {"phone_count": len(phone_number_sids)})
         print(f"Assigning {len(phone_number_sids)} phone number(s) to Trust Product...")
         assigned_numbers = []
+        already_assigned_numbers = []
         failed_numbers = []
+        existing_trust_product_endpoint_sids = {
+            endpoint.channel_endpoint_sid
+            for endpoint in client.trusthub.v1.trust_products(trust_product.sid).trust_products_channel_endpoint_assignment.list()
+        }
 
         for phone_number, phone_sid in phone_number_sids:
+            if phone_sid in existing_trust_product_endpoint_sids:
+                print(f"  INFO: {phone_number} already assigned to Trust Product")
+                already_assigned_numbers.append(phone_number)
+                continue
             try:
                 client.trusthub.v1.trust_products(trust_product.sid).trust_products_channel_endpoint_assignment.create(
                     channel_endpoint_type="phone-number",
@@ -703,6 +708,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
 
         log_step("assign_phone_numbers", "success", {
             "assigned_count": len(assigned_numbers),
+            "already_assigned_count": len(already_assigned_numbers),
             "failed_count": len(failed_numbers),
             "assigned_numbers": assigned_numbers,
             "failed_numbers": [{"number": num, "error": err} for num, err in failed_numbers]
@@ -712,7 +718,7 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
             return {
                 "profile_sid": profile.sid,
                 "trust_product_sid": trust_product.sid,
-                "assigned_numbers": assigned_numbers,
+                "assigned_numbers": assigned_numbers + already_assigned_numbers,
                 "failed_numbers": failed_numbers,
                 "total_requested": len(phone_number_sids),
                 "execution_log": execution_log,
@@ -720,36 +726,42 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
             }
 
         # STEP 11: EVALUATE AND SUBMIT TRUST PRODUCT FOR REVIEW
-        log_step("evaluate_trust_product", "started")
-        trust_product_evaluation = client.trusthub.v1.trust_products(trust_product.sid).trust_products_evaluations.create(
-            policy_sid=SHAKEN_POLICY_SID
-        )
-        trust_product_evaluation_result = _evaluation_result(trust_product_evaluation)
-        if trust_product_evaluation.status != "compliant":
-            log_step("evaluate_trust_product", "failed", trust_product_evaluation_result)
-            return {
-                "profile_sid": profile.sid,
-                "trust_product_sid": trust_product.sid,
-                "assigned_numbers": assigned_numbers,
-                "failed_numbers": failed_numbers,
-                "total_requested": len(phone_number_sids),
-                "execution_log": execution_log,
-                "error": "Trust Product evaluation failed",
-                "evaluation": trust_product_evaluation_result
-            }
-        log_step("evaluate_trust_product", "success", trust_product_evaluation_result)
+        trust_product_evaluation_result = None
+        if not created_trust_product and trust_product.status in ("pending-review", "twilio-approved"):
+            log_step("submit_trust_product_for_review", "skipped", {
+                "trust_product_status": trust_product.status
+            })
+        else:
+            log_step("evaluate_trust_product", "started")
+            trust_product_evaluation = client.trusthub.v1.trust_products(trust_product.sid).trust_products_evaluations.create(
+                policy_sid=SHAKEN_POLICY_SID
+            )
+            trust_product_evaluation_result = _evaluation_result(trust_product_evaluation)
+            if trust_product_evaluation.status != "compliant":
+                log_step("evaluate_trust_product", "failed", trust_product_evaluation_result)
+                return {
+                    "profile_sid": profile.sid,
+                    "trust_product_sid": trust_product.sid,
+                    "assigned_numbers": assigned_numbers + already_assigned_numbers,
+                    "failed_numbers": failed_numbers,
+                    "total_requested": len(phone_number_sids),
+                    "execution_log": execution_log,
+                    "error": "Trust Product evaluation failed",
+                    "evaluation": trust_product_evaluation_result
+                }
+            log_step("evaluate_trust_product", "success", trust_product_evaluation_result)
 
-        log_step("submit_trust_product_for_review", "started")
-        client.trusthub.v1.trust_products(trust_product.sid).update(status="pending-review")
-        log_step("submit_trust_product_for_review", "success")
-        print(f"STIR/SHAKEN Trust Product {trust_product.sid} submitted for review.")
+            log_step("submit_trust_product_for_review", "started")
+            client.trusthub.v1.trust_products(trust_product.sid).update(status="pending-review")
+            log_step("submit_trust_product_for_review", "success")
+            print(f"STIR/SHAKEN Trust Product {trust_product.sid} submitted for review.")
 
         # Print summary
         print("\n" + "="*60)
         print("--- ONBOARDING COMPLETE ---")
         print(f"Customer Profile SID: {profile.sid}")
         print(f"Trust Product SID: {trust_product.sid}")
-        print(f"Phone Numbers Assigned: {len(assigned_numbers)}/{len(phone_number_sids)}")
+        print(f"Phone Numbers Assigned: {len(assigned_numbers) + len(already_assigned_numbers)}/{len(phone_number_sids)}")
         if failed_numbers:
             print(f"Failed Assignments: {len(failed_numbers)}")
             for num, error in failed_numbers:
@@ -759,11 +771,16 @@ def onboard_isv_customer(customer_info, target_phone_numbers):
         result = {
             "profile_sid": profile.sid,
             "trust_product_sid": trust_product.sid,
-            "assigned_numbers": assigned_numbers,
+            "assigned_numbers": assigned_numbers + already_assigned_numbers,
             "failed_numbers": failed_numbers,
             "total_requested": len(phone_number_sids),
             "profile_evaluation": profile_evaluation_result,
             "trust_product_evaluation": trust_product_evaluation_result,
+            "reused_existing_profile": not created_profile,
+            "created_profile": created_profile,
+            "reused_existing_trust_product": not created_trust_product,
+            "created_trust_product": created_trust_product,
+            "reused_existing": (not created_profile) or (not created_trust_product),
             "execution_log": execution_log
         }
         log_step("onboarding_complete", "success")

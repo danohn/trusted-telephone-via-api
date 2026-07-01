@@ -190,7 +190,7 @@ onboard_isv_customer(
 
 The script will:
 1. Validate all phone numbers exist in your account before proceeding
-2. Create a single Customer Profile and Trust Product
+2. Reuse a matching approved/pending Secondary Customer Profile when one already exists, otherwise create one
 3. Assign each phone number to the Secondary Customer Profile and Trust Product
 4. Evaluate each resource before submission
 5. Report success/failure for each phone number assignment
@@ -229,6 +229,12 @@ The script will show the current status, creation dates, and assigned entities/p
 The script first checks `TWILIO_SECONDARY_CUSTOMER_PROFILE_POLICY_SID`. If it is missing, it uses the hardcoded Secondary Customer Profile policy SID `RNdfbf3fae0e1107f8aded0e7cead80bf5`. The configured Primary Customer Profile is still fetched so the script can validate access and log its approval status before creating the Secondary Customer Profile.
 
 The SHAKEN/STIR Trust Product uses `TWILIO_SHAKEN_STIR_POLICY_SID` when set, otherwise it uses Twilio's documented SHAKEN/STIR policy SID. This avoids brittle friendly-name policy lookups.
+
+### **Existing Secondary Profile Reuse**
+
+Before creating a Secondary Customer Profile, the script searches existing profiles for an exact normalized business-name match. It matches both plain friendly names like `Example Legal PLLC` and names created by this script like `Secondary Profile: Example Legal PLLC`. Profiles are reused only when their status is `twilio-approved` or `pending-review`.
+
+If exactly one reusable profile is found, the script reuses it, skips profile/entity creation, assigns any missing phone numbers to that profile, and creates or reuses the STIR/SHAKEN Trust Product. If multiple reusable profiles match, or if only non-reusable profiles such as `draft` match, the script stops and reports candidate SIDs instead of creating another duplicate profile.
 
 ### **Multiple Phone Number Support**
 
